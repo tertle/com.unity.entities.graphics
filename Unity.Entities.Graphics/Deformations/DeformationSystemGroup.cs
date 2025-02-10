@@ -25,29 +25,28 @@ namespace Unity.Rendering
         }
     }
 
-
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(DeformationsInPresentation))]
-    sealed partial class PushMeshDataSystem : SystemBase { }
+    partial class PushMeshDataSystem { }
 
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(DeformationsInPresentation)), UpdateAfter(typeof(PushMeshDataSystem)), UpdateBefore(typeof(SkinningDeformationSystem))]
-    sealed partial class PushSkinMatrixSystem : SystemBase { }
+    partial class PushSkinMatrixSystem { }
 
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(DeformationsInPresentation)), UpdateAfter(typeof(PushMeshDataSystem)), UpdateBefore(typeof(BlendShapeDeformationSystem))]
-    sealed partial class PushBlendWeightSystem : SystemBase { }
+    partial class PushBlendWeightSystem { }
 
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(DeformationsInPresentation)), UpdateAfter(typeof(PushMeshDataSystem))]
-    sealed partial class InstantiateDeformationSystem : SystemBase { }
+    partial class InstantiateDeformationSystem { }
 
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(DeformationsInPresentation)), UpdateAfter(typeof(InstantiateDeformationSystem))]
-    sealed partial class BlendShapeDeformationSystem : SystemBase { }
+    partial class BlendShapeDeformationSystem { }
 
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(DeformationsInPresentation))]
     [UpdateAfter(typeof(BlendShapeDeformationSystem))]
-    sealed partial class SkinningDeformationSystem : SystemBase { }
+    partial class SkinningDeformationSystem { }
 }
