@@ -47,7 +47,26 @@ namespace Unity.Rendering
             MaxIndex = math.max(i, MaxIndex);
         }
 
-        public void FetchTypeHandles(ComponentSystemBase componentSystem)
+        public void UpdateTypeHandles(SystemBase componentSystem)
+        {
+            var types = UsedTypes.GetKeyValueArrays(Allocator.Temp);
+
+            if (TypeDynamics == null || TypeDynamics.Length < MaxIndex + 1)
+                // Allocate according to Capacity so we grow with the same geometric formula as NativeList
+                TypeDynamics = new DynamicComponentTypeHandle[MaxIndex + 1];
+
+            ref var keys = ref types.Keys;
+            int numTypes = keys.Length;
+            for (int i = 0; i < numTypes; ++i)
+            {
+                int arrayIndex = keys[i];
+                var d = TypeDynamics[arrayIndex];
+                d.Update(componentSystem);
+                TypeDynamics[arrayIndex] = d;
+            }
+        }
+
+        public void FetchTypeHandles(SystemBase componentSystem)
         {
             var types = UsedTypes.GetKeyValueArrays(Allocator.Temp);
 
