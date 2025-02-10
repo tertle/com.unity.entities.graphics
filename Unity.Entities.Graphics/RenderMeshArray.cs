@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
+using Unity.Assertions;
+using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Mathematics;
 using UnityEditor;
@@ -12,6 +16,16 @@ using UnityEngine.Rendering;
 namespace Unity.Rendering
 {
     /// <summary>
+    /// A struct storing material and mesh array indices.
+    /// </summary>
+    public struct MaterialMeshIndex
+    {
+        public int MaterialIndex;
+        public int MeshIndex;
+        public int SubMeshIndex;
+    }
+
+    /// <summary>
     /// Represents which materials and meshes to use to render an entity.
     /// </summary>
     /// <remarks>
@@ -19,12 +33,20 @@ namespace Unity.Rendering
     /// array indices to some array (typically a RenderMeshArray), and direct use of
     /// runtime BatchRendererGroup BatchMaterialID / BatchMeshID values.
     /// </remarks>
-    public struct MaterialMeshInfo : IComponentData
+    public struct MaterialMeshInfo : IComponentData, IEnableableComponent
     {
-
         /// <summary>
         /// The material ID.
         /// </summary>
+        /// <remarks>
+        /// The material ID can be one of the following:
+        ///
+        /// * A literal Material ID received from the RegisterMaterial API, encoded as a positive integer.
+        /// * An array index to the RenderMeshArray shared component of the entity, encoded as a negative integer.
+        ///
+        /// Use the literal Material ID to change the material at runtime.
+        /// Use the array index to store the material ID to disk during entity baking.
+        /// </remarks>
         public int Material;
 
         /// <summary>
@@ -33,13 +55,34 @@ namespace Unity.Rendering
         public int Mesh;
 
         /// <summary>
+        /// The bit packed sub-mesh related data.
+        /// </summary>
+        SubMeshIndexInfo32 m_SubMeshIndexInfo;
+
+        /// <summary>
         /// The sub-mesh ID.
         /// </summary>
-        public sbyte Submesh;
+        public ushort SubMesh
+        {
+            get => m_SubMeshIndexInfo.SubMesh;
+            set => m_SubMeshIndexInfo.SubMesh = value;
+        }
 
-        internal bool IsRuntimeMaterial => Material >= 0;
-        internal bool IsRuntimeMesh => Mesh >= 0;
+        /// <summary>
+        /// The MaterialMeshIndex range.
+        /// </summary>
+        public RangeInt MaterialMeshIndexRange => m_SubMeshIndexInfo.MaterialMeshIndexRangeAsInt;
 
+        /// <summary>
+        /// True if the MaterialMeshInfo is using a MaterialMeshIndex range.
+        /// </summary>
+        public bool HasMaterialMeshIndexRange => m_SubMeshIndexInfo.HasMaterialMeshIndexRange;
+
+        /// <summary>
+        /// The sub-mesh ID.
+        /// </summary>
+        [Obsolete("Use SubMesh instead.", true)]
+        public sbyte Submesh { get => (sbyte)SubMesh; set => SubMesh = (ushort)value; }
 
         /// <summary>
         /// Converts the given array index (typically the index inside RenderMeshArray) into
@@ -65,22 +108,29 @@ namespace Unity.Rendering
         /// <param name="meshIndexInRenderMeshArray">The mesh index in <see cref="RenderMeshArray.Meshes"/>.</param>
         /// <param name="submeshIndex">An optional submesh ID.</param>
         /// <returns>Returns the MaterialMeshInfo instance that contains the material and mesh indices.</returns>
-        public static MaterialMeshInfo FromRenderMeshArrayIndices(
-            int materialIndexInRenderMeshArray,
+        public static MaterialMeshInfo FromRenderMeshArrayIndices(int materialIndexInRenderMeshArray,
             int meshIndexInRenderMeshArray,
-            sbyte submeshIndex = 0)
-        {
-            return new MaterialMeshInfo(
+            ushort submeshIndex = 0) =>
+            new(
                 ArrayIndexToStaticIndex(materialIndexInRenderMeshArray),
                 ArrayIndexToStaticIndex(meshIndexInRenderMeshArray),
-                submeshIndex);
-        }
+                new SubMeshIndexInfo32(submeshIndex)
+            );
 
-        private MaterialMeshInfo(int materialIndex, int meshIndex, sbyte submeshIndex = 0)
+        /// <summary>
+        /// Creates an instance of MaterialMeshInfo from a range of material/mesh/submesh index in the corresponding RenderMeshArray.
+        /// </summary>
+        /// <param name="rangeStart">The first index of the range in <see cref="RenderMeshArray.MaterialMeshIndices"/>.</param>
+        /// <param name="rangeLength">The length of the range in <see cref="RenderMeshArray.MaterialMeshIndices"/>.</param>
+        /// <returns></returns>
+        public static MaterialMeshInfo FromMaterialMeshIndexRange(int rangeStart, int rangeLength)
+            => new(0, 0, new SubMeshIndexInfo32((ushort)rangeStart, (byte)rangeLength));
+
+        MaterialMeshInfo(int material, int mesh, SubMeshIndexInfo32 subMeshIndexInfo)
         {
-            Material = materialIndex;
-            Mesh = meshIndex;
-            Submesh = submeshIndex;
+            Material = material;
+            Mesh = mesh;
+            m_SubMeshIndexInfo = subMeshIndexInfo;
         }
 
         /// <summary>
@@ -89,9 +139,8 @@ namespace Unity.Rendering
         /// <param name="materialID">The material ID from <see cref="EntitiesGraphicsSystem.RegisterMaterial"/>.</param>
         /// <param name="meshID">The mesh ID from <see cref="EntitiesGraphicsSystem.RegisterMesh"/>.</param>
         /// <param name="submeshIndex">An optional submesh ID.</param>
-        public MaterialMeshInfo(BatchMaterialID materialID, BatchMeshID meshID, sbyte submeshIndex = 0)
-            : this((int)materialID.value, (int)meshID.value, submeshIndex)
-        {}
+        public MaterialMeshInfo(BatchMaterialID materialID, BatchMeshID meshID, ushort submeshIndex = 0)
+            : this((int)materialID.value, (int)meshID.value, new SubMeshIndexInfo32(submeshIndex)) {}
 
         /// <summary>
         /// The mesh ID property.
@@ -100,7 +149,7 @@ namespace Unity.Rendering
         {
             get
             {
-                Debug.Assert(IsRuntimeMesh);
+                Assert.IsTrue(IsRuntimeMesh);
                 return new BatchMeshID { value = (uint)Mesh };
             }
 
@@ -114,12 +163,16 @@ namespace Unity.Rendering
         {
             get
             {
-                Debug.Assert(IsRuntimeMaterial);
+                Assert.IsTrue(IsRuntimeMaterial);
                 return new BatchMaterialID() { value = (uint)Material };
             }
 
             set => Material = (int) value.value;
         }
+
+        internal bool IsRuntimeMaterial => !HasMaterialMeshIndexRange && Material >= 0;
+
+        internal bool IsRuntimeMesh => !HasMaterialMeshIndexRange && Mesh >= 0;
 
         internal int MeshArrayIndex
         {
@@ -136,15 +189,15 @@ namespace Unity.Rendering
 
     internal struct AssetHash
     {
-        public static void UpdateAsset(ref xxHash3.StreamingState hash, UnityEngine.Object asset)
+        public static void UpdateAsset(ref xxHash3.StreamingState hash, UntypedUnityObjectRef asset)
         {
             // In the editor we can compute a stable serializable hash using an asset GUID
 #if UNITY_EDITOR
-            bool success = AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string guid, out long localId);
+            bool success = AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset.instanceId, out string guid, out long localId);
             hash.Update(success);
             if (!success)
             {
-                hash.Update(asset.GetInstanceID());
+                hash.Update(asset.instanceId);
                 return;
             }
             var guidBytes = Encoding.UTF8.GetBytes(guid);
@@ -156,8 +209,55 @@ namespace Unity.Rendering
 #else
             // In standalone, we have to resort to using the instance ID which is not serializable,
             // but should be usable in the context of this execution.
-            hash.Update(asset.GetInstanceID());
+            hash.Update(asset.instanceId);
 #endif
+        }
+    }
+
+    // Create unmanaged to managed to method allocation
+    internal static unsafe class CallFromBurstRenderMeshArrayHelper
+    {
+        struct Functions
+        {
+            public IntPtr AddTo;
+        }
+
+        internal delegate void AddToDelegate(
+            EntityManager* em, EntityQuery* query,
+            UnityObjectRef<Material>* materialsPtr, int materialsLength,
+            UnityObjectRef<Mesh>* meshesPtr, int meshesLength,
+            MaterialMeshIndex* materialMeshIndicesPtr, int materialMeshIndicesLength);
+        static AddToDelegate s_AddToGCDefeat;
+        static readonly SharedStatic<Functions> k_Functions = SharedStatic<Functions>.GetOrCreate<Functions>();
+
+#if UNITY_EDITOR
+        [ExcludeFromBurstCompatTesting("References managed engine API")]
+        [UnityEditor.InitializeOnLoadMethod]
+        public static void EditorInitializeOnLoadMethod() => Init();
+#else
+        [ExcludeFromBurstCompatTesting("References managed engine API")]
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void RuntimeInitialization() => Init();
+#endif
+
+        public static void Init()
+        {
+            s_AddToGCDefeat = RenderMeshArray.AddTo;
+            k_Functions.Data.AddTo = Marshal.GetFunctionPointerForDelegate(s_AddToGCDefeat);
+        }
+
+        public static void AddRenderMeshArrayTo(
+            EntityManager em, EntityQuery query,
+            NativeArray<UnityObjectRef<Material>> materials,
+            NativeArray<UnityObjectRef<Mesh>> meshes,
+            NativeArray<MaterialMeshIndex> materialMeshIndices)
+        {
+                ((delegate* unmanaged[Cdecl] <
+                    EntityManager*, EntityQuery*,
+                    UnityObjectRef<Material>*, int,
+                    UnityObjectRef<Mesh>*, int,
+                    MaterialMeshIndex*, int,
+                    void>)k_Functions.Data.AddTo)(&em, &query, (UnityObjectRef<Material>*)materials.GetUnsafeReadOnlyPtr(), materials.Length, (UnityObjectRef<Mesh>*)meshes.GetUnsafeReadOnlyPtr(), meshes.Length, (MaterialMeshIndex*)materialMeshIndices.GetUnsafeReadOnlyPtr(), materialMeshIndices.Length);
         }
     }
 
@@ -166,8 +266,10 @@ namespace Unity.Rendering
     /// </summary>
     public struct RenderMeshArray : ISharedComponentData, IEquatable<RenderMeshArray>
     {
-        [SerializeField] private Material[] m_Materials;
-        [SerializeField] private Mesh[] m_Meshes;
+        [SerializeField] private UnityObjectRef<Material>[] m_Materials;
+        [SerializeField] private UnityObjectRef<Mesh>[] m_Meshes;
+        [SerializeField] private MaterialMeshIndex[] m_MaterialMeshIndices;
+
         // Memoize the expensive 128-bit hash
         [SerializeField] private uint4 m_Hash128;
 
@@ -176,18 +278,58 @@ namespace Unity.Rendering
         /// </summary>
         /// <param name="materials">The array of materials to use in the RenderMeshArray.</param>
         /// <param name="meshes">The array of meshes to use in the RenderMeshArray.</param>
-        public RenderMeshArray(Material[] materials, Mesh[] meshes)
+        /// <param name="materialMeshIndices">The array of MaterialMeshIndex to use in the RenderMeshArray.</param>
+        public RenderMeshArray(Material[] materials, Mesh[] meshes, MaterialMeshIndex[] materialMeshIndices = null)
         {
-            m_Meshes = meshes;
-            m_Materials = materials;
+            m_Meshes = new UnityObjectRef<Mesh>[meshes.Length];
+            for (int i = 0; i < meshes.Length; i++)
+                m_Meshes[i] = meshes[i];
+
+            m_Materials = new UnityObjectRef<Material>[materials.Length];
+            for (int i = 0; i < materials.Length; i++)
+                m_Materials[i] = materials[i];
+
+            m_MaterialMeshIndices = materialMeshIndices?.ToArray();
+            m_Hash128 = uint4.zero;
+            ResetHash128();
+        }
+
+
+        /// <summary>
+        /// Constructs an instance of RenderMeshArray from an array of materials and an array of meshes.
+        /// </summary>
+        /// <param name="materials">The array of materials to use in the RenderMeshArray.</param>
+        /// <param name="meshes">The array of meshes to use in the RenderMeshArray.</param>
+        /// <param name="materialMeshIndices">The array of MaterialMeshIndex to use in the RenderMeshArray.</param>
+        [MonoPInvokeCallback(typeof(CallFromBurstRenderMeshArrayHelper.AddToDelegate))]
+        internal static unsafe void AddTo(EntityManager* em, EntityQuery* query,
+            UnityObjectRef<Material>* materialsPtr, int materialsLength,
+            UnityObjectRef<Mesh>* meshesPtr, int meshesLength,
+            MaterialMeshIndex* materialMeshIndicesPtr, int materialMeshIndicesLength)
+            => (*em).AddSharedComponentManaged(*query, new RenderMeshArray(
+                new ReadOnlySpan<UnityObjectRef<Material>>(materialsPtr, materialsLength),
+                new ReadOnlySpan<UnityObjectRef<Mesh>>(meshesPtr, meshesLength),
+                new ReadOnlySpan<MaterialMeshIndex>(materialMeshIndicesPtr, materialMeshIndicesLength)));
+
+        /// <summary>
+        /// Constructs an instance of RenderMeshArray from an array of materials and an array of meshes.
+        /// </summary>
+        /// <param name="materials">The array of materials to use in the RenderMeshArray.</param>
+        /// <param name="meshes">The array of meshes to use in the RenderMeshArray.</param>
+        /// <param name="materialMeshIndices">The array of MaterialMeshIndex to use in the RenderMeshArray.</param>
+        public RenderMeshArray(ReadOnlySpan<UnityObjectRef<Material>> materials, ReadOnlySpan<UnityObjectRef<Mesh>> meshes, ReadOnlySpan<MaterialMeshIndex> materialMeshIndices = default)
+        {
+            m_Meshes = meshes.ToArray();
+            m_Materials = materials.ToArray();
+            m_MaterialMeshIndices = materialMeshIndices.ToArray();
             m_Hash128 = uint4.zero;
             ResetHash128();
         }
 
         /// <summary>
-        /// Accessor property for the meshes array.
+        /// Accessor property for the mesh references array.
         /// </summary>
-        public Mesh[] Meshes
+        public UnityObjectRef<Mesh>[] MeshReferences
         {
             get => m_Meshes;
             set
@@ -198,9 +340,9 @@ namespace Unity.Rendering
         }
 
         /// <summary>
-        /// Accessor property for the materials array.
+        /// Accessor property for the material references array.
         /// </summary>
-        public Material[] Materials
+        public UnityObjectRef<Material>[] MaterialReferences
         {
             get => m_Materials;
             set
@@ -210,9 +352,80 @@ namespace Unity.Rendering
             }
         }
 
+        /// <summary>
+        /// Accessor property for the MaterialMeshIndex array.
+        /// </summary>
+        public MaterialMeshIndex[] MaterialMeshIndices
+        {
+            get => m_MaterialMeshIndices;
+            set
+            {
+                m_Hash128 = uint4.zero;
+                m_MaterialMeshIndices = value;
+            }
+        }
+
+        /// <summary>
+        /// Accessor property for the meshes array.
+        /// </summary>
+        [Obsolete("Meshes has been deprecated; use MeshReferences instead.", false)]
+        public Mesh[] Meshes
+        {
+            get
+            {
+                if (m_Meshes == null)
+                    return null;
+                var meshesArray = new Mesh[m_Meshes.Length];
+                for (int i = 0; i < m_Meshes.Length; i++)
+                {
+                    meshesArray[i] = m_Meshes[i].Value;
+                }
+                return meshesArray;
+            }
+            set
+            {
+                m_Hash128 = uint4.zero;
+
+                m_Meshes = new UnityObjectRef<Mesh>[value.Length];
+                for (int i = 0; i < value.Length; i++)
+                {
+                    m_Meshes[i] = value[i];
+                }
+            }
+        }
+
+        /// <summary>
+        /// Accessor property for the materials array.
+        /// </summary>
+        [Obsolete("Materials has been deprecated; use MaterialReferences instead.", false)]
+        public Material[] Materials
+        {
+            get
+            {
+                if (m_Materials == null)
+                    return null;
+                var materialsArray = new Material[m_Materials.Length];
+                for (int i = 0; i < m_Materials.Length; i++)
+                {
+                    materialsArray[i] = m_Materials[i].Value;
+                }
+                return materialsArray;
+            }
+            set
+            {
+                m_Hash128 = uint4.zero;
+
+                m_Materials = new UnityObjectRef<Material>[value.Length];
+                for (int i = 0; i < value.Length; i++)
+                {
+                    m_Materials[i] = value[i];
+                }
+            }
+        }
+
         internal Mesh GetMeshWithStaticIndex(int staticMeshIndex)
         {
-            Debug.Assert(staticMeshIndex <= 0, "Mesh index must be a static index (non-positive)");
+            Assert.IsTrue(staticMeshIndex <= 0, "Mesh index must be a static index (non-positive)");
 
             if (staticMeshIndex >= 0)
                 return null;
@@ -222,44 +435,13 @@ namespace Unity.Rendering
 
         internal Material GetMaterialWithStaticIndex(int staticMaterialIndex)
         {
-            Debug.Assert(staticMaterialIndex <= 0, "Material index must be a static index (non-positive)");
+            Assert.IsTrue(staticMaterialIndex <= 0, "Material index must be a static index (non-positive)");
 
             if (staticMaterialIndex >= 0)
                 return null;
 
             return m_Materials[MaterialMeshInfo.StaticIndexToArrayIndex(staticMaterialIndex)];
         }
-
-        internal Dictionary<Mesh, int> GetMeshToIndexMapping()
-        {
-            var mapping = new Dictionary<Mesh, int>();
-
-            if (m_Meshes == null)
-                return mapping;
-
-            int numMeshes = m_Meshes.Length;
-
-            for (int i = 0; i < numMeshes; ++i)
-                mapping[m_Meshes[i]] = MaterialMeshInfo.ArrayIndexToStaticIndex(i);
-
-            return mapping;
-        }
-
-        internal Dictionary<Material, int> GetMaterialToIndexMapping()
-        {
-            var mapping = new Dictionary<Material, int>();
-
-            if (m_Materials == null)
-                return mapping;
-
-            int numMaterials = m_Materials.Length;
-
-            for (int i = 0; i < numMaterials; ++i)
-                mapping[m_Materials[i]] = MaterialMeshInfo.ArrayIndexToStaticIndex(i);
-
-            return mapping;
-        }
-
 
         /// <summary>
         /// Returns a 128-bit hash that (almost) uniquely identifies the contents of the component.
@@ -294,15 +476,25 @@ namespace Unity.Rendering
 
             int numMeshes = m_Meshes?.Length ?? 0;
             int numMaterials = m_Materials?.Length ?? 0;
+            int numMatMeshIndices = m_MaterialMeshIndices?.Length ?? 0;
 
             hash.Update(numMeshes);
             hash.Update(numMaterials);
+            hash.Update(numMatMeshIndices);
 
             for (int i = 0; i < numMeshes; ++i)
-                AssetHash.UpdateAsset(ref hash, m_Meshes[i]);
+                AssetHash.UpdateAsset(ref hash, m_Meshes[i].Id);
 
             for (int i = 0; i < numMaterials; ++i)
-                AssetHash.UpdateAsset(ref hash, m_Materials[i]);
+                AssetHash.UpdateAsset(ref hash, m_Materials[i].Id);
+
+            for (int i = 0; i < numMatMeshIndices; ++i)
+            {
+                MaterialMeshIndex matMeshIndex = m_MaterialMeshIndices[i];
+                hash.Update(matMeshIndex.MaterialIndex);
+                hash.Update(matMeshIndex.MeshIndex);
+                hash.Update(matMeshIndex.SubMeshIndex);
+            }
 
             uint4 H = hash.DigestHash128();
 
@@ -317,16 +509,48 @@ namespace Unity.Rendering
         /// Combines a list of RenderMeshes into one RenderMeshArray.
         /// </summary>
         /// <param name="renderMeshes">The list of RenderMesh instances to combine.</param>
-        /// <returns>Returns a RenderMeshArray instance that contains containing all of the meshes and materials.</returns>
+        /// <returns>Returns a RenderMeshArray instance that contains all of the meshes and materials. The <see cref="RenderMeshArray.MaterialMeshIndices"/> field is left to null.</returns>
+        public static RenderMeshArray CombineRenderMeshes(List<RenderMeshUnmanaged> renderMeshes)
+        {
+            var meshes = new Dictionary<UnityObjectRef<Mesh>, bool>(renderMeshes.Count);
+            var materials = new Dictionary<UnityObjectRef<Material>, bool>(renderMeshes.Count);
+
+            foreach (var renderMesh in renderMeshes)
+            {
+                meshes[renderMesh.mesh] = true;
+                if (renderMesh.materialForSubMesh != null)
+                    materials[renderMesh.materialForSubMesh] = true;
+            }
+
+            return new RenderMeshArray(materials.Keys.ToArray(), meshes.Keys.ToArray());
+        }
+
+        /// <summary>
+        /// **Obsolete.** Use CombineRenderMeshes(List&lt;RenderMeshUnmanaged&gt;) instead.
+        /// </summary>
+        /// <remarks>
+        /// Combines a list of RenderMeshes into one RenderMeshArray.
+        /// </remarks>
+        /// <param name="renderMeshes">The list of RenderMesh instances to combine.</param>
+        /// <returns>Returns a RenderMeshArray instance that contains all of the meshes and materials. The <see cref="RenderMeshArray.MaterialMeshIndices"/> field is left to null.</returns>
+        [Obsolete("Use CombineRenderMeshes(List<RenderMeshUnmanaged>) instead. (RemovedAfter Entities 2.0)")]
         public static RenderMeshArray CombineRenderMeshes(List<RenderMesh> renderMeshes)
         {
             var meshes = new Dictionary<Mesh, bool>(renderMeshes.Count);
             var materials = new Dictionary<Material, bool>(renderMeshes.Count);
 
-            foreach (var rm in renderMeshes)
+            foreach (var renderMesh in renderMeshes)
             {
-                meshes[rm.mesh] = true;
-                materials[rm.material] = true;
+                meshes[renderMesh.mesh] = true;
+
+                if (renderMesh.materials != null)
+                {
+                    foreach (var material in renderMesh.materials)
+                    {
+                        if (material != null)
+                            materials[material] = true;
+                    }
+                }
             }
 
             return new RenderMeshArray(materials.Keys.ToArray(), meshes.Keys.ToArray());
@@ -336,7 +560,7 @@ namespace Unity.Rendering
         /// Combines a list of RenderMeshArrays into one RenderMeshArray.
         /// </summary>
         /// <param name="renderMeshArrays">The list of RenderMeshArray instances to combine.</param>
-        /// <returns>Returns a RenderMeshArray instance that contains all of the meshes and materials.</returns>
+        /// <returns>Returns a RenderMeshArray instance that contains all of the meshes and materials. The <see cref="RenderMeshArray.MaterialMeshIndices"/> field is left to null.</returns>
         public static RenderMeshArray CombineRenderMeshArrays(List<RenderMeshArray> renderMeshArrays)
         {
             int totalMeshes = 0;
@@ -344,20 +568,26 @@ namespace Unity.Rendering
 
             foreach (var rma in renderMeshArrays)
             {
-                totalMeshes += rma.Meshes?.Length ?? 0;
-                totalMaterials += rma.Meshes?.Length ?? 0;
+                totalMeshes += rma.MeshReferences?.Length ?? 0;
+                totalMaterials += rma.MeshReferences?.Length ?? 0;
             }
 
-            var meshes = new Dictionary<Mesh, bool>(totalMeshes);
-            var materials = new Dictionary<Material, bool>(totalMaterials);
+            var meshes = new Dictionary<UnityObjectRef<Mesh>, bool>(totalMeshes);
+            var materials = new Dictionary<UnityObjectRef<Material>, bool>(totalMaterials);
 
             foreach (var rma in renderMeshArrays)
             {
-                foreach (var mesh in rma.Meshes)
-                    meshes[mesh] = true;
+                foreach (var mesh in rma.MeshReferences)
+                {
+                    if (mesh.IsValid())
+                        meshes[mesh] = true;
+                }
 
-                foreach (var material in rma.Materials)
-                    materials[material] = true;
+                foreach (var material in rma.MaterialReferences)
+                {
+                    if (material.IsValid())
+                        materials[material] = true;
+                }
             }
 
             return new RenderMeshArray(materials.Keys.ToArray(), meshes.Keys.ToArray());
@@ -368,12 +598,12 @@ namespace Unity.Rendering
         /// </summary>
         /// <param name="materialsWithDuplicates">The list of the materials.</param>
         /// <param name="meshesWithDuplicates">The list of the meshes.</param>
-        /// <returns>Returns a RenderMeshArray instance that contains all off the meshes and materials, and with no duplicates.</returns>
+        /// <returns>Returns a RenderMeshArray instance that contains all off the meshes and materials, and with no duplicates. The <see cref="RenderMeshArray.MaterialMeshIndices"/> field is left to null.</returns>
         public static RenderMeshArray CreateWithDeduplication(
             List<Material> materialsWithDuplicates, List<Mesh> meshesWithDuplicates)
         {
-            var meshes = new Dictionary<Mesh, bool>(meshesWithDuplicates.Count);
-            var materials = new Dictionary<Material, bool>(materialsWithDuplicates.Count);
+            var meshes = new Dictionary<UnityObjectRef<Mesh>, bool>(meshesWithDuplicates.Count);
+            var materials = new Dictionary<UnityObjectRef<Material>, bool>(materialsWithDuplicates.Count);
 
             foreach (var mat in materialsWithDuplicates)
                 materials[mat] = true;
@@ -384,6 +614,26 @@ namespace Unity.Rendering
             return new RenderMeshArray(materials.Keys.ToArray(), meshes.Keys.ToArray());
         }
 
+        /// <summary>
+        /// Creates the new instance of the RenderMeshArray from given mesh and material lists, removing duplicate entries.
+        /// </summary>
+        /// <param name="materialsWithDuplicates">The list of the materials.</param>
+        /// <param name="meshesWithDuplicates">The list of the meshes.</param>
+        /// <returns>Returns a RenderMeshArray instance that contains all off the meshes and materials, and with no duplicates. The <see cref="RenderMeshArray.MaterialMeshIndices"/> field is left to null.</returns>
+        public static RenderMeshArray CreateWithDeduplication(
+            List<UnityObjectRef<Material>> materialsWithDuplicates, List<UnityObjectRef<Mesh>> meshesWithDuplicates)
+        {
+            var meshes = new Dictionary<UnityObjectRef<Mesh>, bool>(meshesWithDuplicates.Count);
+            var materials = new Dictionary<UnityObjectRef<Material>, bool>(materialsWithDuplicates.Count);
+
+            foreach (var mat in materialsWithDuplicates)
+                materials[mat] = true;
+
+            foreach (var mesh in meshesWithDuplicates)
+                meshes[mesh] = true;
+
+            return new RenderMeshArray(materials.Keys.ToArray(), meshes.Keys.ToArray());
+        }
 
         /// <summary>
         /// Gets the material for given MaterialMeshInfo.
@@ -394,8 +644,52 @@ namespace Unity.Rendering
         {
             if (materialMeshInfo.IsRuntimeMaterial)
                 return null;
+
+            // When using an index range, just return the first material of the range
+            if (materialMeshInfo.HasMaterialMeshIndexRange)
+            {
+                RangeInt range = materialMeshInfo.MaterialMeshIndexRange;
+                Assert.IsTrue(range.length > 0);
+
+                int firstMaterialIndex = MaterialMeshIndices[range.start].MaterialIndex;
+                return MaterialReferences[firstMaterialIndex];
+            }
             else
-                return Materials[materialMeshInfo.MaterialArrayIndex];
+            {
+                return MaterialReferences[materialMeshInfo.MaterialArrayIndex];
+            }
+        }
+
+        /// <summary>
+        /// Gets the materials for given MaterialMeshInfo.
+        /// </summary>
+        /// <param name="materialMeshInfo">The MaterialMeshInfo to use.</param>
+        /// <returns>Returns the associated material instances, or null if the material is runtime.</returns>
+        public List<Material> GetMaterials(MaterialMeshInfo materialMeshInfo)
+        {
+            if (materialMeshInfo.IsRuntimeMaterial)
+                return null;
+
+            if (materialMeshInfo.HasMaterialMeshIndexRange)
+            {
+                RangeInt range = materialMeshInfo.MaterialMeshIndexRange;
+                Assert.IsTrue(range.length > 0);
+
+                var materials = new List<Material>(range.length);
+
+                for (int i = range.start; i < range.end; i++)
+                {
+                    int materialIndex = MaterialMeshIndices[i].MaterialIndex;
+                    materials.Add(MaterialReferences[materialIndex]);
+                }
+
+                return materials;
+            }
+            else
+            {
+                var material = MaterialReferences[materialMeshInfo.MaterialArrayIndex];
+                return new List<Material> { material };
+            }
         }
 
         /// <summary>
@@ -407,8 +701,20 @@ namespace Unity.Rendering
         {
             if (materialMeshInfo.IsRuntimeMesh)
                 return null;
+
+            // When using an index range, just return the first mesh of the range
+            if (materialMeshInfo.HasMaterialMeshIndexRange)
+            {
+                RangeInt range = materialMeshInfo.MaterialMeshIndexRange;
+                Assert.IsTrue(range.length > 0);
+
+                int firstMeshIndex = MaterialMeshIndices[range.start].MeshIndex;
+                return MeshReferences[firstMeshIndex];
+            }
             else
-                return Meshes[materialMeshInfo.MeshArrayIndex];
+            {
+                return MeshReferences[materialMeshInfo.MeshArrayIndex];
+            }
         }
 
         /// <summary>

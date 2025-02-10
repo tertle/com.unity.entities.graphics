@@ -24,9 +24,7 @@
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,
-    "defineConstraints": [
-        "!UNITY_DOTSRUNTIME"
-    ],
+    "defineConstraints": [],
     "versionDefines": [
         {
             "name": "com.unity.render-pipelines.high-definition",
@@ -37,6 +35,11 @@
             "name": "com.unity.render-pipelines.universal",
             "expression": "9.9.9",
             "define": "URP_10_0_0_OR_NEWER"
+        },
+        {
+            "name": "com.unity.render-pipelines.universal",
+            "expression": "15.9.9",
+            "define": "URP_16_0_0_OR_NEWER"
         },
         {
             "name": "com.unity.render-pipelines.core",

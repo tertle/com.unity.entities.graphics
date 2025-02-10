@@ -10,7 +10,7 @@ using Unity.Transforms;
 namespace Unity.Rendering
 {
     /// <summary>
-    /// A system that generates a scene bounding volume for each section at conversion time.
+    /// A system that generates a scene bounding volume for each entity scene section at conversion time.
     /// </summary>
     [WorldSystemFilter(WorldSystemFilterFlags.EntitySceneOptimizations)]
     [UpdateAfter(typeof(RenderBoundsUpdateSystem))]
@@ -126,12 +126,12 @@ namespace Unity.Rendering
     [RequireMatchingQueriesForUpdate]
     [UpdateInGroup(typeof(UpdatePresentationSystemGroup))]
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.EntitySceneOptimizations | WorldSystemFilterFlags.Editor)]
-    partial class RenderBoundsUpdateSystem : SystemBase
+    internal partial class RenderBoundsUpdateSystem : SystemBase
     {
         EntityQuery m_WorldRenderBounds;
 
         [BurstCompile]
-        struct BoundsJob : IJobChunk
+        internal struct BoundsJob : IJobChunk
         {
             [ReadOnly] public ComponentTypeHandle<RenderBounds> RendererBounds;
             [ReadOnly] public ComponentTypeHandle<LocalToWorld> LocalToWorld;
@@ -173,6 +173,7 @@ namespace Unity.Rendering
                 new EntityQueryDesc
                 {
                     All = new[] { ComponentType.ChunkComponent<ChunkWorldRenderBounds>(), ComponentType.ReadWrite<WorldRenderBounds>(), ComponentType.ReadOnly<RenderBounds>(), ComponentType.ReadOnly<LocalToWorld>() },
+                    None = new[] { ComponentType.ReadOnly<SkipWorldRenderBoundsUpdate>() }
                 }
                 );
             m_WorldRenderBounds.SetChangedVersionFilter(new[] { ComponentType.ReadOnly<RenderBounds>(), ComponentType.ReadOnly<LocalToWorld>()});

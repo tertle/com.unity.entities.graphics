@@ -24,34 +24,36 @@ namespace Unity.Rendering
         /// </remarks>
         public int       ParentMask;
 
-        
         /// <summary>
-        /// The low part of the LOD distance container.
+        /// The LOD distances for the four closest LODS.
         /// </summary>
         public float4    LODDistances0;
 
         /// <summary>
-        /// LOD distance container, high part.
+        /// The LOD distances for the four furthest LODS.
         /// </summary>
         public float4    LODDistances1;
 
-        
         /// <summary>
-        /// Local reference point.
+        /// The local reference point which Entities Graphics uses to calculate the distance from the camera to the LOD group.
         /// </summary>
         public float3    LocalReferencePoint;
     }
 
-    
     /// <summary>
     /// An unmanaged component that represents a world reference point to use for LOD group.
     /// </summary>
-    struct LODGroupWorldReferencePoint : IComponentData
+    internal struct LODGroupWorldReferencePoint : IComponentData
     {
         /// <summary>
         /// The world-space x, y, and z position of the reference point.
         /// </summary>
         public float3 Value;
+    }
+
+    internal struct SkipLODGroupWorldReferencePointUpdate : IComponentData
+    {
+
     }
 
     /// <summary>
@@ -60,13 +62,12 @@ namespace Unity.Rendering
     public struct MeshLODComponent : IComponentData
     {
         /// <summary>
-        /// The parent LOD group entity.
+        /// The LOD group entity.
         /// </summary>
         public Entity   Group;
 
-        
         /// <summary>
-        /// The mesh LOD parent group.
+        /// The mesh LOD parent group. This is used internally to optimize the LOD system.
         /// </summary>
         public Entity   ParentGroup;
 

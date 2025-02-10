@@ -3,20 +3,25 @@ using Unity.Burst;
 using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Mathematics;
 using Unity.Transforms;
 
 namespace Unity.Rendering
 {
+    /// <summary>
+    /// Updates previous matrix data to match LocalToWorld value on initialization.
+    /// </summary>
     //@TODO: Updating always necessary due to empty component group. When Component group and archetype chunks are unified, [RequireMatchingQueriesForUpdate] can be added.
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(PresentationSystemGroup))]
-    [UpdateAfter(typeof(EntitiesGraphicsSystem))]
-    internal partial class MatrixPreviousSystem : SystemBase
+    [UpdateAfter(typeof(UpdatePresentationSystemGroup))]
+    [UpdateBefore(typeof(EntitiesGraphicsSystem))]
+    internal partial class MatrixPreviousInitializationSystem : SystemBase
     {
         private EntityQuery m_GroupPrev;
 
         [BurstCompile]
-        struct UpdateMatrixPrevious : IJobChunk
+        public struct InitializeMatrixPrevious : IJobChunk
         {
             [ReadOnly] public ComponentTypeHandle<LocalToWorld> LocalToWorldTypeHandle;
             public ComponentTypeHandle<BuiltinMaterialPropertyUnity_MatrixPreviousM> MatrixPreviousTypeHandle;
@@ -31,7 +36,13 @@ namespace Unity.Rendering
                 for (int i = 0, chunkEntityCount = chunk.Count; i < chunkEntityCount; i++)
                 {
                     var localToWorld = chunkLocalToWorld[i].Value;
-                    chunkMatrixPrevious[i] = new BuiltinMaterialPropertyUnity_MatrixPreviousM {Value = localToWorld};
+                    // The assumption is made here that if the initial value of the previous matrix is zero that
+                    // it needs to be initialized to the localToWorld matrix value. This avoids issues with incorrect
+                    // motion vector results on the first frame and entity is rendered.
+                    if (chunkMatrixPrevious[i].Value.Equals(float4x4.zero))
+                    {
+                        chunkMatrixPrevious[i] = new BuiltinMaterialPropertyUnity_MatrixPreviousM { Value = localToWorld };
+                    }
                 }
             }
         }
@@ -58,22 +69,18 @@ namespace Unity.Rendering
                 },
                 Options = EntityQueryOptions.FilterWriteGroup
             });
-            m_GroupPrev.SetChangedVersionFilter(new[]
-            {
-                ComponentType.ReadOnly<LocalToWorld>(),
-                ComponentType.ReadOnly<BuiltinMaterialPropertyUnity_MatrixPreviousM>()
-            });
+            m_GroupPrev.SetOrderVersionFilter();
         }
 
         /// <inheritdoc/>
         protected override void OnUpdate()
         {
-            var updateMatrixPreviousJob = new UpdateMatrixPrevious
+            var initializeMatrixPreviousJob = new InitializeMatrixPrevious
             {
                 LocalToWorldTypeHandle = GetComponentTypeHandle<LocalToWorld>(true),
                 MatrixPreviousTypeHandle = GetComponentTypeHandle<BuiltinMaterialPropertyUnity_MatrixPreviousM>(),
             };
-            Dependency = updateMatrixPreviousJob.ScheduleParallel(m_GroupPrev, Dependency);
+            Dependency = initializeMatrixPreviousJob.ScheduleParallel(m_GroupPrev, Dependency);
         }
     }
 }

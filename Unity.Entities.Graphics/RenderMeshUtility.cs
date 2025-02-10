@@ -1,9 +1,12 @@
-#if HDRP_10_0_0_OR_NEWER
+#if HDRP_10_0_0_OR_NEWER || URP_16_0_0_OR_NEWER
 #define USE_HYBRID_MOTION_PASS
 #endif
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using Unity.Assertions;
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Entities.Graphics;
@@ -40,7 +43,7 @@ namespace Unity.Rendering
         /// <param name="renderer">The renderer object (e.g. a <see cref="MeshRenderer"/>) to get default settings from.</param>
         public RenderMeshDescription(Renderer renderer)
         {
-            Debug.Assert(renderer != null, "Must have a non-null Renderer to create RenderMeshDescription.");
+            Assert.IsTrue(renderer != null, "Must have a non-null Renderer to create RenderMeshDescription.");
 
             FilterSettings = new RenderFilterSettings
             {
@@ -52,11 +55,8 @@ namespace Unity.Rendering
                 StaticShadowCaster = renderer.staticShadowCaster,
             };
 
-            var staticLightingMode = RenderMeshUtility.StaticLightingModeFromRenderer(renderer);
-            var lightProbeUsage = renderer.lightProbeUsage;
-
-            LightProbeUsage = (staticLightingMode == RenderMeshUtility.StaticLightingMode.LightProbes)
-                ? lightProbeUsage
+            LightProbeUsage = RenderMeshUtility.StaticLightingModeFromRendererLightmapIndex(renderer.lightmapIndex) == RenderMeshUtility.StaticLightingMode.LightProbes
+                ? renderer.lightProbeUsage
                 : LightProbeUsage.Off;
         }
 
@@ -110,32 +110,32 @@ namespace Unity.Rendering
             LightProbesCustom = 1 << 3,
             DepthSorted = 1 << 4,
             Baking = 1 << 5,
+            UseRenderMeshArray = 1 << 6,
+            LODGroup = 1 << 7,
+            PerVertexMotionPass = 1 << 8,
+
+            // Count of unique flag combinations
+            PermutationCount = 1 << 9,
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static bool HasFlagFast(this EntitiesGraphicsComponentFlags flags, EntitiesGraphicsComponentFlags flag) => (flags & flag) == flag;
 
         // Pre-generate ComponentTypes objects for each flag combination, so all the components
         // can be added at once, minimizing structural changes.
-        internal class EntitiesGraphicsComponentTypes
+        class EntitiesGraphicsComponentTypes
         {
-            private ComponentTypeSet[] m_ComponentTypePermutations;
-
-            public EntitiesGraphicsComponentTypes()
+            ComponentTypeSet[] m_ComponentTypePermutations = new ComponentTypeSet[(int)EntitiesGraphicsComponentFlags.PermutationCount];
+            public ComponentTypeSet GetComponentTypes(EntitiesGraphicsComponentFlags flags)
             {
-                // Subtract one because of "None"
-                int numFlags = Enum.GetValues(typeof(EntitiesGraphicsComponentFlags)).Length - 1;
-
-                var permutations = new List<ComponentTypeSet>();
-                for (int flags = 0; flags < (1 << numFlags); ++flags)
-                    permutations.Add(GenerateComponentTypes((EntitiesGraphicsComponentFlags)flags));
-
-                m_ComponentTypePermutations = permutations.ToArray();
+                var componentTypeSet = m_ComponentTypePermutations[(int)flags];
+                if (componentTypeSet.Length == 0)
+                    m_ComponentTypePermutations[(int)flags] = componentTypeSet = GenerateComponentTypes(flags);
+                return componentTypeSet;
             }
-
-            public ComponentTypeSet GetComponentTypes(EntitiesGraphicsComponentFlags flags) =>
-                m_ComponentTypePermutations[(int) flags];
-
-            public static ComponentTypeSet GenerateComponentTypes(EntitiesGraphicsComponentFlags flags)
+            static ComponentTypeSet GenerateComponentTypes(EntitiesGraphicsComponentFlags flags)
             {
-                List<ComponentType> components = new List<ComponentType>()
+                var components = new FixedList128Bytes<ComponentType>
                 {
                     // Absolute minimum set of components required by Entities Graphics
                     // to be considered for rendering. Entities without these components will
@@ -154,37 +154,41 @@ namespace Unity.Rendering
                     ComponentType.ReadWrite<PerInstanceCullingTag>(),
                 };
 
+                var isInAuthoring = flags.HasFlagFast(EntitiesGraphicsComponentFlags.GameObjectConversion) || flags.HasFlagFast(EntitiesGraphicsComponentFlags.Baking);
+
                 // RenderMesh is no longer used at runtime, it is only used during conversion.
                 // At runtime all entities use RenderMeshArray.
-                if (flags.HasFlag(EntitiesGraphicsComponentFlags.GameObjectConversion) | flags.HasFlag(EntitiesGraphicsComponentFlags.Baking) )
-                    components.Add(ComponentType.ReadWrite<RenderMesh>());
+                if (isInAuthoring)
+                    components.Add(ComponentType.ReadWrite<RenderMeshUnmanaged>());
 
-                if (!flags.HasFlag(EntitiesGraphicsComponentFlags.GameObjectConversion) | flags.HasFlag(EntitiesGraphicsComponentFlags.Baking) )
+                if (flags.HasFlagFast(EntitiesGraphicsComponentFlags.UseRenderMeshArray) && !isInAuthoring)
                     components.Add(ComponentType.ReadWrite<RenderMeshArray>());
 
                 // Baking uses TransformUsageFlags, and as such should not be explicitly adding LocalToWorld to anything
-                if(!flags.HasFlag(EntitiesGraphicsComponentFlags.Baking))
+                if(!flags.HasFlagFast(EntitiesGraphicsComponentFlags.Baking))
                     components.Add(ComponentType.ReadWrite<LocalToWorld>());
 
                 // Components required by objects that need to be rendered in per-object motion passes.
     #if USE_HYBRID_MOTION_PASS
-                if (flags.HasFlag(EntitiesGraphicsComponentFlags.InMotionPass))
+                if (flags.HasFlagFast(EntitiesGraphicsComponentFlags.InMotionPass))
                     components.Add(ComponentType.ReadWrite<BuiltinMaterialPropertyUnity_MatrixPreviousM>());
+                if (flags.HasFlagFast(EntitiesGraphicsComponentFlags.PerVertexMotionPass))
+                    components.Add(ComponentType.ReadWrite<PerVertexMotionVectors_Tag>());
     #endif
-
-                if (flags.HasFlag(EntitiesGraphicsComponentFlags.LightProbesBlend))
+                if (flags.HasFlagFast(EntitiesGraphicsComponentFlags.LightProbesBlend))
                     components.Add(ComponentType.ReadWrite<BlendProbeTag>());
-                else if (flags.HasFlag(EntitiesGraphicsComponentFlags.LightProbesCustom))
+                else if (flags.HasFlagFast(EntitiesGraphicsComponentFlags.LightProbesCustom))
                     components.Add(ComponentType.ReadWrite<CustomProbeTag>());
-
-                if (flags.HasFlag(EntitiesGraphicsComponentFlags.DepthSorted))
+                if (flags.HasFlagFast(EntitiesGraphicsComponentFlags.DepthSorted))
                     components.Add(ComponentType.ReadWrite<DepthSorted_Tag>());
+                if (flags.HasFlagFast(EntitiesGraphicsComponentFlags.LODGroup))
+                    components.Add(ComponentType.ReadWrite<MeshLODComponent>());
 
-                return new ComponentTypeSet(components.ToArray());
+                return new ComponentTypeSet(components);
             }
         }
 
-        internal static EntitiesGraphicsComponentTypes s_EntitiesGraphicsComponentTypes = new EntitiesGraphicsComponentTypes();
+        static EntitiesGraphicsComponentTypes s_EntitiesGraphicsComponentTypes = new ();
 
         // Use a boolean constant for guarding most of the code so both ifdef branches are
         // always compiled.
@@ -193,10 +197,41 @@ namespace Unity.Rendering
 #pragma warning disable CS0162
 
 #if USE_HYBRID_MOTION_PASS
-        internal const bool kUseHybridMotionPass = true;
+        const bool k_UseHybridMotionPass = true;
 #else
-        internal const bool kUseHybridMotionPass = false;
+        const bool k_UseHybridMotionPass = false;
 #endif
+
+        internal static ComponentTypeSet ComputeComponentTypes(EntitiesGraphicsComponentFlags flags)
+            => s_EntitiesGraphicsComponentTypes.GetComponentTypes(flags);
+
+        internal static void AppendMotionAndProbeFlags(this ref EntitiesGraphicsComponentFlags flags, RenderMeshDescription renderMeshDescription, bool isStatic)
+        {
+            // Entities with Static are never rendered with motion vectors
+            if (k_UseHybridMotionPass && renderMeshDescription.FilterSettings.IsInMotionPass && renderMeshDescription.FilterSettings.MotionMode == MotionVectorGenerationMode.Object && !isStatic)
+                flags |= EntitiesGraphicsComponentFlags.InMotionPass;
+            flags |= LightProbeFlags(renderMeshDescription.LightProbeUsage);
+        }
+
+        internal static void AppendPerVertexMotionPassFlag(this ref EntitiesGraphicsComponentFlags flags, ReadOnlySpan<Material> materials)
+        {
+            foreach (var material in materials)
+                flags.AppendPerVertexMotionPassFlag(material);
+        }
+
+        internal static void AppendDepthSortedFlag(this ref EntitiesGraphicsComponentFlags flags, ReadOnlySpan<Material> materials)
+        {
+            foreach (var material in materials)
+                flags.AppendDepthSortedFlag(material);
+        }
+
+        internal static void AppendDepthSortedFlag(this ref EntitiesGraphicsComponentFlags flags, List<Material> materials)
+        {
+            foreach (var material in materials)
+                flags.AppendDepthSortedFlag(material);
+        }
+
+
         /// <summary>
         /// Set the Entities Graphics component values to render the given entity using the given description.
         /// Any missing components will be added, which results in structural changes.
@@ -213,51 +248,117 @@ namespace Unity.Rendering
             RenderMeshArray renderMeshArray,
             MaterialMeshInfo materialMeshInfo = default)
         {
-            var material = renderMeshArray.GetMaterial(materialMeshInfo);
+            var materials = renderMeshArray.GetMaterials(materialMeshInfo);
             var mesh = renderMeshArray.GetMesh(materialMeshInfo);
 
-            // Entities with Static are never rendered with motion vectors
-            bool inMotionPass = kUseHybridMotionPass &&
-                                renderMeshDescription.FilterSettings.IsInMotionPass &&
-                                !entityManager.HasComponent<Static>(entity);
-
-            EntitiesGraphicsComponentFlags flags = EntitiesGraphicsComponentFlags.None;
-            if (inMotionPass) flags |= EntitiesGraphicsComponentFlags.InMotionPass;
-            flags |= LightProbeFlags(renderMeshDescription.LightProbeUsage);
-            flags |= DepthSortedFlags(material);
+            if (mesh == null)
+            {
+                Debug.LogError(("materialMeshInfo does not point to a valid mesh"));
+                return;
+            }
+            if (materials == null)
+            {
+                Debug.LogError(("materialMeshInfo does not point to a valid material"));
+                return;
+            }
 
             // Add all components up front using as few calls as possible.
-            entityManager.AddComponent(entity, s_EntitiesGraphicsComponentTypes.GetComponentTypes(flags));
+            var componentFlags = EntitiesGraphicsComponentFlags.UseRenderMeshArray;
+            componentFlags.AppendMotionAndProbeFlags(renderMeshDescription, entityManager.HasComponent<Static>(entity));
+            componentFlags.AppendDepthSortedFlag(materials);
+            entityManager.AddComponent(entity, ComputeComponentTypes(componentFlags));
 
-            entityManager.SetSharedComponentManaged(entity, renderMeshDescription.FilterSettings);
+            entityManager.SetSharedComponent(entity, renderMeshDescription.FilterSettings);
             entityManager.SetSharedComponentManaged(entity, renderMeshArray);
             entityManager.SetComponentData(entity, materialMeshInfo);
+            entityManager.SetComponentData(entity, new RenderBounds { Value = mesh.bounds.ToAABB() });
+        }
 
-            if (mesh != null)
+        /// <summary>
+        /// Set the Entities Graphics component values to render the given entity using the given description.
+        /// Any missing components will be added, which results in structural changes.
+        /// </summary>
+        /// <param name="entity">The entity to set the component values for.</param>
+        /// <param name="entityManager">The <see cref="EntityManager"/> used to set the component values.</param>
+        /// <param name="renderMeshDescription">The description that determines how the entity is to be rendered.</param>
+        /// <param name="materialMeshInfo">The MaterialMeshInfo containing the mesh and material ids </param>
+        public static void AddComponents(
+            Entity entity,
+            EntityManager entityManager,
+            in RenderMeshDescription renderMeshDescription,
+            MaterialMeshInfo materialMeshInfo)
+        {
+
+            var egs = entityManager.World.GetExistingSystemManaged<EntitiesGraphicsSystem>();
+            if (egs == null)
             {
-                var localBounds = mesh.bounds.ToAABB();
-                entityManager.SetComponentData(entity, new RenderBounds { Value = localBounds });
+                Debug.LogError("Unable to get the Entities Graphics System");
+                return;
             }
+
+            var mesh = egs.GetMesh(materialMeshInfo.MeshID);
+            var material = egs.GetMaterial(materialMeshInfo.MaterialID);
+            if (mesh == null)
+            {
+                Debug.LogError(("materialMeshInfo does not point to a valid mesh"));
+                return;
+            }
+            if (material == null)
+            {
+                Debug.LogError(("materialMeshInfo does not point to a valid material"));
+                return;
+            }
+
+            // Add all components up front using as few calls as possible.
+            var componentFlags = EntitiesGraphicsComponentFlags.None;
+            componentFlags.AppendMotionAndProbeFlags(renderMeshDescription, entityManager.HasComponent<Static>(entity));
+            componentFlags.AppendPerVertexMotionPassFlag(material);
+            componentFlags.AppendDepthSortedFlag(material);
+            entityManager.AddComponent(entity, ComputeComponentTypes(componentFlags));
+
+            entityManager.SetSharedComponent(entity, renderMeshDescription.FilterSettings);
+            entityManager.SetComponentData(entity, materialMeshInfo);
+            entityManager.SetComponentData(entity, new RenderBounds { Value = mesh.bounds.ToAABB() });
+        }
+
+        private const string kMotionVectorsShaderPass_HDRP_URP = "MotionVectors";
+        private const string kMotionVectorMaterialTagKey_HDRP = "MotionVector";
+        private const string kMotionVectorMaterialTagValue_HDRP = "User";
+        private static readonly ShaderTagId kMotionVectorShaderTagKey_URP = new("AlwaysRenderMotionVectors");
+        private static readonly ShaderTagId kMotionVectorShaderTagValue_URP = new("true");
+        /// <summary>
+        /// Adds the `PerVertexMotionPass` flag if the given material wants to write vertex shader generated motion
+        /// vectors. Works for materials that use standard HDRP or URP conventions for writing motion vectors.
+        /// </summary>
+        static void AppendPerVertexMotionPassFlag(this ref EntitiesGraphicsComponentFlags flags, Material material)
+        {
+#if HDRP_10_0_0_OR_NEWER
+            // For HDRP check that the motion vectors pass is enabled and that the material enables user defined motion vectors.
+            if(material.GetShaderPassEnabled(kMotionVectorsShaderPass_HDRP_URP) && material.GetTag(kMotionVectorMaterialTagKey_HDRP, false) == kMotionVectorMaterialTagValue_HDRP)
+                flags |= EntitiesGraphicsComponentFlags.PerVertexMotionPass;
+#elif URP_16_0_0_OR_NEWER
+            // For URP check that the motion vectors pass is enabled and that the shader has user defined motion vectors.
+            if(material.GetShaderPassEnabled(kMotionVectorsShaderPass_HDRP_URP) && material.shader.FindSubshaderTagValue(0, kMotionVectorShaderTagKey_URP) == kMotionVectorShaderTagValue_URP)
+                flags |= EntitiesGraphicsComponentFlags.PerVertexMotionPass;
+#endif
         }
 
 #pragma warning restore CS0162
-        internal static EntitiesGraphicsComponentFlags DepthSortedFlags(Material material)
+
+        static void AppendDepthSortedFlag(this ref EntitiesGraphicsComponentFlags flags, Material material)
         {
             if (IsMaterialTransparent(material))
-                return EntitiesGraphicsComponentFlags.DepthSorted;
-            else
-                return EntitiesGraphicsComponentFlags.None;
+                flags |= EntitiesGraphicsComponentFlags.DepthSorted;
         }
 
-
-        /// <summary>
-        /// Return true if the given <see cref="Material"/> is known to be transparent. Works
-        /// for materials that use HDRP or URP conventions for transparent materials.
-        /// </summary>
         private const string kSurfaceTypeHDRP = "_SurfaceType";
         private const string kSurfaceTypeURP = "_Surface";
         private static int kSurfaceTypeHDRPNameID = Shader.PropertyToID(kSurfaceTypeHDRP);
         private static int kSurfaceTypeURPNameID = Shader.PropertyToID(kSurfaceTypeURP);
+        /// <summary>
+        /// Return true if the given <see cref="Material"/> is known to be transparent. Works
+        /// for materials that use HDRP or URP conventions for transparent materials.
+        /// </summary>
         private static bool IsMaterialTransparent(Material material)
         {
             if (material == null)
@@ -288,16 +389,16 @@ namespace Unity.Rendering
             LightProbes = 2,
         }
 
-        internal static StaticLightingMode StaticLightingModeFromRenderer(Renderer renderer)
-        {
-            var staticLightingMode = StaticLightingMode.None;
-            if (renderer.lightmapIndex >= 65534 || renderer.lightmapIndex < 0)
-                staticLightingMode = StaticLightingMode.LightProbes;
-            else if (renderer.lightmapIndex >= 0)
-                staticLightingMode = StaticLightingMode.LightMapped;
+        internal static StaticLightingMode StaticLightingModeFromRendererLightmapIndex(int lightmapIndex)
+            => IsLightMapped(lightmapIndex) ? StaticLightingMode.LightMapped : StaticLightingMode.LightProbes;
+        internal static bool IsLightMapped(int lightmapIndex)
+            => lightmapIndex is < 65534 and >= 0;
 
-            return staticLightingMode;
-        }
+        internal static ComponentTypeSet LightmapComponents => new (
+            ComponentType.ReadWrite<BuiltinMaterialPropertyUnity_LightmapST>(),
+            ComponentType.ReadWrite<BuiltinMaterialPropertyUnity_LightmapIndex>(),
+            ComponentType.ReadWrite<LightMaps>()
+        );
 
         internal static EntitiesGraphicsComponentFlags LightProbeFlags(LightProbeUsage lightProbeUsage)
         {
@@ -312,17 +413,17 @@ namespace Unity.Rendering
             }
         }
 
-        internal static string FormatRenderMesh(RenderMesh renderMesh) =>
-            $"RenderMesh(material: {renderMesh.material}, mesh: {renderMesh.mesh}, subMesh: {renderMesh.subMesh})";
+        internal static string FormatRenderMesh(RenderMeshUnmanaged renderMesh) =>
+            $"RenderMesh(material: {renderMesh.materialForSubMesh}, mesh: {renderMesh.mesh}, subMesh: {renderMesh.subMeshInfo.ToString()})";
 
-        internal static bool ValidateMesh(RenderMesh renderMesh)
+        internal static bool ValidateMesh(RenderMeshUnmanaged renderMesh)
         {
             if (renderMesh.mesh == null)
             {
                 Debug.LogWarning($"RenderMesh must have a valid non-null Mesh. {FormatRenderMesh(renderMesh)}");
                 return false;
             }
-            else if (renderMesh.subMesh < 0 || renderMesh.subMesh >= renderMesh.mesh.subMeshCount)
+            else if (renderMesh.subMeshInfo.SubMesh < 0 || renderMesh.subMeshInfo.SubMesh >= renderMesh.mesh.Value.subMeshCount)
             {
                 Debug.LogWarning($"RenderMesh subMesh index out of bounds. {FormatRenderMesh(renderMesh)}");
                 return false;
@@ -331,9 +432,9 @@ namespace Unity.Rendering
             return true;
         }
 
-        internal static bool ValidateMaterial(RenderMesh renderMesh)
+        internal static bool ValidateMaterial(RenderMeshUnmanaged renderMesh)
         {
-            if (renderMesh.material == null)
+            if (renderMesh.materialForSubMesh == null)
             {
                 Debug.LogWarning($"RenderMesh must have a valid non-null Material. {FormatRenderMesh(renderMesh)}");
                 return false;
@@ -342,7 +443,7 @@ namespace Unity.Rendering
             return true;
         }
 
-        internal static bool ValidateRenderMesh(RenderMesh renderMesh) =>
+        internal static bool ValidateRenderMesh(RenderMeshUnmanaged renderMesh) =>
             ValidateMaterial(renderMesh) && ValidateMesh(renderMesh);
 
     }

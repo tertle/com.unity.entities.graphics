@@ -1,4 +1,198 @@
+---
+uid: changelog
+---
+
 # Changelog
+
+## [1.4.6] - 2025-01-16
+
+### Changed
+
+* Updated entities packages dependencies
+
+
+## [1.4.5] - 2024-11-08
+
+### Added
+
+* The new PerVertexMotionVectors_Tag component data type informs Entities Graphics that an Entity needs to participate in the object motion vector pass. The tag is automatically added for entities that go through the builtin MeshRendererBaker path.
+
+### Fixed
+
+* "MaterialMeshInfo does not point to a valid mesh" for runtime created entities
+
+
+## [1.4.3] - 2024-10-16
+
+### Fixed
+* Entities graphics constantly allocating more memory without releasing it until next time system update is called.
+
+
+## [1.4.2] - 2024-10-04
+
+### Changed
+
+* Updated Burst dependency to version 1.8.18
+* Updated entities packages dependencies
+
+### Added
+
+* The new `ProceduralMotion_Tag` tag component data type informs Entities Graphics that an Entity needs to participate in the object motion vector pass. The tag is automatically added for entities that go through the builtin MeshRendererBaker path.
+* Enable entities motion vector pass participation for URP.
+* PruneUploadBufferPool API to request pruning of the upload buffer pool.
+
+### Fixed
+
+* GameObjects that depend on vertex shader logic to generate procedural motion vectors through object motion vector passes will now also do the same when baked to Entities and rendered through Entities Graphics.
+
+
+## [1.3.2] - 2024-09-06
+
+### Changed
+* Updated entities packages dependencies
+
+### Fixed
+
+* Fixed an issue with entities.graphics and Burst 1.8.12
+
+
+## [1.3.0-pre.4] - 2024-07-17
+
+### Fixed
+
+* Pink materials when causing a domain reload while a subscene is open with lightmapped materials.
+
+
+## [1.3.0-exp.1] - 2024-06-11
+
+### Changed
+
+* Updated entities packages dependencies
+
+### Fixed
+
+* Fixed an issue with RegisterMaterialsAndMeshes
+
+
+## [1.2.3] - 2024-05-30
+
+### Changed
+* Updated entities packages dependencies
+
+
+## [1.2.1] - 2024-04-26
+
+### Added
+
+* MaterialReferences and MesheReferences have been provided as non allocating replacements for Materials and Meshes
+
+### Changed
+* Updated entities packages dependencies
+
+### Deprecated
+
+* RenderMeshArray.Materials is now obsolete, in favor of RenderMeshArray.MaterialReferences
+* RenderMeshArray.Meshes is now obsolete, in favor of RenderMeshArray.MeshReferences
+* Deprecated Materials and Meshes from RenderMeshArray as they now allocate.
+
+### Fixed
+
+* Resolved a performance issue in UpdateHybridChunksStructure
+* Fixed an allocation in RegisterMaterialsAndMeshes
+
+
+## [1.2.0] - 2024-03-22
+
+### Changed
+
+* fixed the issue with LOD objects being culled when the camera is static
+
+### Fixed
+
+* Entities Graphics should now never run out of space in the NewChunks buffer.
+* A null reference exception thrown in some cases when using MeshRenderers with missing materials and/or meshes
+
+
+## [1.2.0-pre.12] - 2024-02-13
+
+### Added
+
+* `RenderMeshUnmanaged` an unmanaged IComponentData using the new UnityObjRef<T> for big performance gains in baking!
+* Support for light probe anchor overrides
+
+### Changed
+
+* MaterialMeshInfo.SubMesh chaned from sbyte to ushort, allowing for the full range of submesh indices.
+* The sharedcomponents `Lightmaps` and `RenderMeshArray` now store UnityObjRef<T> instead.
+
+### Deprecated
+
+* The baking sharedcomponent `RenderMesh` is now obsolete, in favor of a new `RenderMeshUnmanaged`.
+
+### Fixed
+
+* Improved handling of smaller transforms
+* Light probes now use the center of world bounding box as the reference point, same as game objects
+* Materials sometimes not correctly baked when using ENABLE_MESH_RENDERER_SUBMESH_DATA_SHARING
+
+
+## [1.2.0-pre.6] - 2023-12-13
+
+### Changed
+
+* Promotion preparation
+
+
+## [1.2.0-pre.4] - 2023-11-28
+
+### Changed
+* Updated version for release preparation
+
+
+## [1.2.0-exp.3] - 2023-11-09
+
+### Changed
+
+* Update instances of deprecated `MeshWriteData.uvRegion` for `2023.2` or higher
+* obsolete `FindObjectsOfType<T>()` changed for `FindObjectsByType<T>()` in `2023.2` or higher.
+* The minimum supported editor version is now 2022.3.11f1
+
+
+## [1.1.0-pre.3] - 2023-10-17
+
+### Changed
+* Updated version for release preparation
+
+
+## [1.1.0-exp.1] - 2023-09-18
+
+### Added
+
+* Support for using a mesh in multiple LODs within a LODGroup when in a subscene.
+* A variation of RenderMeshUtility.AddComponents that does not need a RenderMeshArray
+* Support maximum LOD level quality setting within a subscene.
+* Add support for multiple submeshes per entity. Stop creating one entity per submesh unless skinning is used.
+* Support for decal projector components in a subscene.
+* Cull based on CullLightmapShadowCasters flag in FrustumCullingJob
+
+### Changed
+
+* MaterialMeshInfo now inherits IEnableable and allows high frequency state changes
+
+### Fixed
+
+* Address incorrect motion vector calculation on initial frame.
+* JobTempAlloc warnings that might occur under some circumstances.
+* Rendering without a RenderMeshArray component
+* Addresses rendering artifacts when Entities Graphics GPU allocation fails
+* Memory leaks in Burst Occlusion Culling
+* Support for DecalProjector in URP added to CompanionComponentSupportedTypes
+
+
+## [1.0.16] - 2023-09-11
+
+### Changed
+* Updated com.unity.entities dependency to 1.0.16
 
 
 ## [1.0.14] - 2023-07-27
@@ -11,9 +205,6 @@
 
 * Updated com.unity.entities dependency to 1.0.14
 
-
-
-### Security
 
 ## [1.0.11] - 2023-06-19
 

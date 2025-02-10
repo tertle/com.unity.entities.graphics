@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using Unity.Assertions;
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
@@ -8,115 +11,153 @@ namespace Unity.Rendering
 {
     class MeshRendererBakingUtility
     {
-        struct LODState
+        enum ConversionMode
         {
-            public LODGroup LodGroup;
-            public Entity LodGroupEntity;
-            public int LodGroupIndex;
+            Null,
+            AttachToPrimaryEntity,
+            AttachToPrimaryEntityForSingleMaterial,
+            AttachToMultipleEntities
         }
 
-        static void CreateLODState<T>(Baker<T> baker, Renderer authoringSource, out LODState lodState) where T : Component
+        [TemporaryBakingType]
+        [InternalBufferCapacity(4)]
+        internal struct MaterialReferenceElement : IBufferElementData
         {
-            // LODGroup
-            lodState = new LODState();
-            lodState.LodGroup = baker.GetComponentInParent<LODGroup>();
-            lodState.LodGroupEntity = baker.GetEntity(lodState.LodGroup, TransformUsageFlags.Renderable);
-            lodState.LodGroupIndex = FindInLODs(lodState.LodGroup, authoringSource);
+            public UnityObjectRef<Material> Material;
         }
 
-        private static int FindInLODs(LODGroup lodGroup, Renderer authoring)
+        struct LODStateBakeData<T> where T : Component
         {
-            if (lodGroup != null)
+            MeshLODComponent m_LODComponent;
+            bool m_DoLOD;
+            public LODStateBakeData(Baker<T> baker, Renderer authoringSource)
             {
-                var lodGroupLODs = lodGroup.GetLODs();
-
-                // Find the renderer inside the LODGroup
-                for (int i = 0; i < lodGroupLODs.Length; ++i)
+                var lodGroup = baker.GetComponentInParent<LODGroup>();
+                m_LODComponent = new MeshLODComponent
                 {
-                    foreach (var renderer in lodGroupLODs[i].renderers)
+                    Group = baker.GetEntity(lodGroup, TransformUsageFlags.Renderable),
+                    LODMask = FindInLODs(lodGroup, authoringSource)
+                };
+                m_DoLOD = m_LODComponent.Group != Entity.Null && m_LODComponent.LODMask != -1;
+            }
+
+            public void AppendLODFlags(ref RenderMeshUtility.EntitiesGraphicsComponentFlags flags)
+            {
+                if (m_DoLOD)
+                    flags |= RenderMeshUtility.EntitiesGraphicsComponentFlags.LODGroup;
+            }
+
+            public void SetLODComponent(Baker<T> baker, Entity entity)
+            {
+                if (m_DoLOD)
+                    baker.SetComponent(entity, m_LODComponent);
+            }
+
+            static int FindInLODs(LODGroup lodGroup, Renderer authoring)
+            {
+                if (lodGroup != null)
+                {
+                    var lodGroupLODs = lodGroup.GetLODs();
+
+                    int lodGroupMask = 0;
+
+                    // Find the renderer inside the LODGroup
+                    for (int i = 0; i < lodGroupLODs.Length; ++i)
                     {
-                        if (renderer == authoring)
+                        foreach (var renderer in lodGroupLODs[i].renderers)
                         {
-                            return i;
+                            if (renderer == authoring)
+                            {
+                                lodGroupMask |= (1 << i);
+                            }
                         }
                     }
+                    return lodGroupMask > 0 ? lodGroupMask : -1;
                 }
+                return -1;
             }
-            return -1;
         }
+
 
 #pragma warning disable CS0162
-        private static void AddRendererComponents<T>(Entity entity, Baker<T> baker, in RenderMeshDescription renderMeshDescription, RenderMesh renderMesh) where T : Component
+
+        internal static void ConvertToMultipleEntities<T>(Baker<T> baker,
+            Renderer authoring,
+            Mesh mesh,
+            Transform root,
+            out NativeArray<Entity> additionalEntities) where T : Component
         {
-            // Entities with Static are never rendered with motion vectors
-            bool inMotionPass = RenderMeshUtility.kUseHybridMotionPass &&
-                                renderMeshDescription.FilterSettings.IsInMotionPass &&
-                                !baker.IsStatic();
-
-            RenderMeshUtility.EntitiesGraphicsComponentFlags flags = RenderMeshUtility.EntitiesGraphicsComponentFlags.Baking;
-            if (inMotionPass) flags |= RenderMeshUtility.EntitiesGraphicsComponentFlags.InMotionPass;
-            flags |= RenderMeshUtility.LightProbeFlags(renderMeshDescription.LightProbeUsage);
-            flags |= RenderMeshUtility.DepthSortedFlags(renderMesh.material);
-
-            // Add all components up front using as few calls as possible.
-            var componentTypes = RenderMeshUtility.s_EntitiesGraphicsComponentTypes.GetComponentTypes(flags);
-            baker.AddComponent(entity, componentTypes);
-
-            baker.SetSharedComponentManaged(entity, renderMesh);
-            baker.SetSharedComponentManaged(entity, renderMeshDescription.FilterSettings);
-
-            var localBounds = renderMesh.mesh.bounds.ToAABB();
-            baker.SetComponent(entity, new RenderBounds { Value = localBounds });
+            Convert(baker, authoring, mesh, ConversionMode.AttachToMultipleEntities, root, out additionalEntities);
         }
 
-        internal static void Convert<T>(Baker<T> baker, Renderer authoring, Mesh mesh, List<Material> sharedMaterials, bool attachToPrimaryEntityForSingleMaterial, out List<Entity> additionalEntities, UnityEngine.Transform root = null) where T : Component
+        internal static void ConvertOnPrimaryEntityForSingleMaterial<T>(Baker<T> baker,
+            Renderer authoring,
+            Mesh mesh,
+            out NativeArray<Entity> additionalEntities) where T : Component
         {
-            additionalEntities = new List<Entity>();
+            Convert(baker, authoring, mesh, ConversionMode.AttachToPrimaryEntityForSingleMaterial, null, out additionalEntities);
+        }
 
-            if (mesh == null || sharedMaterials.Count == 0)
-            {
-                Debug.LogWarning(
-                    $"Renderer is not converted because either the assigned mesh is null or no materials are assigned on GameObject {authoring.name}.",
-                    authoring);
+        internal static void ConvertOnPrimaryEntity<T>(Baker<T> baker,
+            Renderer authoring,
+            Mesh mesh) where T : Component
+        {
+            Convert(baker, authoring, mesh, ConversionMode.AttachToPrimaryEntity, null, out _);
+        }
+
+        private static void Convert<T>(Baker<T> baker,
+            Renderer authoring,
+            Mesh mesh,
+            ConversionMode conversionMode,
+            Transform root,
+            out NativeArray<Entity> additionalEntities) where T : Component
+        {
+            Assert.IsTrue(conversionMode != ConversionMode.Null);
+            additionalEntities = default;
+
+            var materials = authoring.sharedMaterials;
+            if (!ValidateMeshAndMaterials(authoring, mesh, materials))
                 return;
-            }
-
-            // Takes a dependency on the material
-            foreach (var material in sharedMaterials)
-                baker.DependsOn(material);
-
-            // Takes a dependency on the mesh
-            baker.DependsOn(mesh);
 
             // RenderMeshDescription accesses the GameObject layer.
             // Declaring the dependency on the GameObject with GetLayer, so the baker rebakes if the layer changes
             baker.GetLayer(authoring);
             var desc = new RenderMeshDescription(authoring);
-            var renderMesh = new RenderMesh(authoring, mesh, sharedMaterials);
 
             // Always disable per-object motion vectors for static objects
-            if (baker.IsStatic())
+            if (baker.IsStatic() && desc.FilterSettings.MotionMode == MotionVectorGenerationMode.Object)
+                desc.FilterSettings.MotionMode = MotionVectorGenerationMode.Camera;
+
+            // Add material references if there are more than one material on a single entity
+            if (conversionMode == ConversionMode.AttachToPrimaryEntity && authoring.sharedMaterials.Length > 1)
             {
-                if (desc.FilterSettings.MotionMode == MotionVectorGenerationMode.Object)
-                    desc.FilterSettings.MotionMode = MotionVectorGenerationMode.Camera;
+                var extraMaterials = baker.AddBuffer<MaterialReferenceElement>(baker.GetEntity(TransformUsageFlags.None));
+                var sharedMaterials = authoring.sharedMaterials;
+                for (var index = 1; index < sharedMaterials.Length; index++)
+                    extraMaterials.Add(new MaterialReferenceElement { Material = sharedMaterials[index] });
             }
 
-            if (attachToPrimaryEntityForSingleMaterial && sharedMaterials.Count == 1)
+            var attachToPrimaryEntity = false;
+            attachToPrimaryEntity |= conversionMode == ConversionMode.AttachToPrimaryEntity;
+            attachToPrimaryEntity |= conversionMode == ConversionMode.AttachToPrimaryEntityForSingleMaterial && authoring.sharedMaterials.Length == 1;
+
+            if (attachToPrimaryEntity)
             {
                 ConvertToSingleEntity(
                     baker,
                     desc,
-                    renderMesh,
-                    authoring);
+                    authoring,
+                    mesh,
+                    materials);
             }
             else
             {
                 ConvertToMultipleEntities(
                     baker,
                     desc,
-                    renderMesh,
                     authoring,
-                    sharedMaterials,
+                    mesh,
+                    materials,
                     root,
                     out additionalEntities);
             }
@@ -127,82 +168,115 @@ namespace Unity.Rendering
         static void ConvertToSingleEntity<T>(
             Baker<T> baker,
             RenderMeshDescription renderMeshDescription,
-            RenderMesh renderMesh,
-            Renderer renderer) where T : Component
+            Renderer renderer, Mesh mesh, Material[] materials) where T : Component
         {
-            CreateLODState(baker, renderer, out var lodState);
-
             var entity = baker.GetEntity(renderer, TransformUsageFlags.Renderable);
+            var lodComponent = new LODStateBakeData<T>(baker, renderer);
 
-            AddRendererComponents(entity, baker, renderMeshDescription, renderMesh);
+            // Add all components up front using as few calls as possible.
+            var componentFlag = RenderMeshUtility.EntitiesGraphicsComponentFlags.Baking;
+            componentFlag.AppendMotionAndProbeFlags(renderMeshDescription, baker.IsStatic());
+            componentFlag.AppendPerVertexMotionPassFlag(materials);
+            componentFlag.AppendDepthSortedFlag(materials);
+            lodComponent.AppendLODFlags(ref componentFlag);
+            baker.AddComponent(entity, RenderMeshUtility.ComputeComponentTypes(componentFlag));
 
-            if (lodState.LodGroupEntity != Entity.Null && lodState.LodGroupIndex != -1)
-            {
-                var lodComponent = new MeshLODComponent { Group = lodState.LodGroupEntity, LODMask = 1 << lodState.LodGroupIndex };
-                baker.AddComponent(entity, lodComponent);
-            }
+            // Add lightmap components if the renderer is lightmapped
+            if (RenderMeshUtility.IsLightMapped(renderer.lightmapIndex))
+                baker.AddComponent(entity, RenderMeshUtility.LightmapComponents);
+
+            var subMeshIndexInfo = materials.Length == 1 ? new SubMeshIndexInfo32(0) : new SubMeshIndexInfo32(0, (byte)materials.Length);
+            baker.SetSharedComponent(entity, renderMeshDescription.FilterSettings);
+            baker.SetComponent(entity, new RenderMeshUnmanaged(mesh, renderer.sharedMaterial, subMeshIndexInfo));
+            baker.SetComponent(entity, new RenderBounds { Value = mesh.bounds.ToAABB() });
+            lodComponent.SetLODComponent(baker, entity);
         }
 
         internal static void ConvertToMultipleEntities<T>(
             Baker<T> baker,
             RenderMeshDescription renderMeshDescription,
-            RenderMesh renderMesh,
-            Renderer renderer,
-            List<Material> sharedMaterials,
+            Renderer renderer, Mesh mesh, Material[] materials,
             UnityEngine.Transform root,
-            out List<Entity> additionalEntities) where T : Component
+            out NativeArray<Entity> additionalEntities) where T : Component
         {
-            CreateLODState(baker, renderer, out var lodState);
+            var lodState = new LODStateBakeData<T>(baker, renderer);
+            var renderBounds = new RenderBounds { Value = mesh.bounds.ToAABB() };
+            additionalEntities = new NativeArray<Entity>(materials.Length, Allocator.Temp);
 
-            int materialCount = sharedMaterials.Count;
-            additionalEntities = new List<Entity>();
 
-            for (var m = 0; m != materialCount; m++)
+            if (root == null)
             {
-                Entity meshEntity;
-                if (root == null)
+                baker.CreateAdditionalEntities(additionalEntities, TransformUsageFlags.Renderable); // $"{baker.GetName()}-MeshRendererEntity");
+                baker.AddComponent<AdditionalMeshRendererEntity>(additionalEntities);
+            }
+            else
+            {
+                baker.CreateAdditionalEntities(additionalEntities, TransformUsageFlags.ManualOverride); // $"{baker.GetName()}-MeshRendererEntity");
+                baker.AddComponent(additionalEntities, new LocalToWorld {Value = root.localToWorldMatrix});
+                baker.AddComponent(additionalEntities, LocalTransform.Identity);
+
+                if (!baker.IsStatic())
                 {
-                    meshEntity = baker.CreateAdditionalEntity(TransformUsageFlags.Renderable, false, $"{baker.GetName()}-MeshRendererEntity");
-
-                    // Update Transform components:
-                    baker.AddComponent<AdditionalMeshRendererEntity>(meshEntity);
-                }
-                else
-                {
-                    meshEntity = baker.CreateAdditionalEntity(TransformUsageFlags.ManualOverride, false, $"{baker.GetName()}-MeshRendererEntity");
-
-                    var localToWorld = root.localToWorldMatrix;
-                    baker.AddComponent(meshEntity, new LocalToWorld {Value = localToWorld});
-
-                    // TODO(DOTS-7063): FromMatrix should throw here if the matrix is unrepresentable as TransformData.
-                    baker.AddComponent(meshEntity, LocalTransform.Identity);
-
-                    if (!baker.IsStatic())
+                    var parent = new Parent
                     {
-                        var rootEntity = baker.GetEntity(root, TransformUsageFlags.Renderable);
-                        baker.AddComponent(meshEntity, new Parent {Value = rootEntity});
-                    }
-                }
-
-                additionalEntities.Add(meshEntity);
-
-                var material = sharedMaterials[m];
-
-                renderMesh.subMesh  = m;
-                renderMesh.material = material;
-
-                AddRendererComponents(
-                    meshEntity,
-                    baker,
-                    renderMeshDescription,
-                    renderMesh);
-
-                if (lodState.LodGroupEntity != Entity.Null && lodState.LodGroupIndex != -1)
-                {
-                    var lodComponent = new MeshLODComponent { Group = lodState.LodGroupEntity, LODMask = 1 << lodState.LodGroupIndex };
-                    baker.AddComponent(meshEntity, lodComponent);
+                        Value = baker.GetEntity(root, TransformUsageFlags.Renderable)
+                    };
+                    baker.AddComponent<Parent>(additionalEntities);
+                    foreach (var entity in additionalEntities)
+                        baker.SetComponent(entity, parent);
                 }
             }
+
+            // Add all components
+            var componentFlag = RenderMeshUtility.EntitiesGraphicsComponentFlags.Baking;
+            componentFlag.AppendMotionAndProbeFlags(renderMeshDescription, baker.IsStatic());
+            componentFlag.AppendDepthSortedFlag(renderer.sharedMaterials);
+            lodState.AppendLODFlags(ref componentFlag);
+            baker.AddComponent(additionalEntities, RenderMeshUtility.ComputeComponentTypes(componentFlag));
+            baker.SetSharedComponent(additionalEntities, renderMeshDescription.FilterSettings);
+
+            // Add lightmap components if the renderer is lightmapped
+            if (RenderMeshUtility.IsLightMapped(renderer.lightmapIndex))
+                baker.AddComponent(additionalEntities, RenderMeshUtility.LightmapComponents);
+
+            for (ushort subMeshMaterialIndex = 0; subMeshMaterialIndex < materials.Length; subMeshMaterialIndex++)
+            {
+                var meshEntity = additionalEntities[subMeshMaterialIndex];
+                baker.SetComponent(meshEntity, new RenderMeshUnmanaged(mesh, materials[subMeshMaterialIndex], new SubMeshIndexInfo32(subMeshMaterialIndex)));
+                baker.SetComponent(meshEntity, renderBounds);
+                lodState.SetLODComponent(baker, meshEntity);
+            }
+        }
+
+        static bool ValidateMeshAndMaterials(Renderer authoring, Mesh mesh, Material[] materials)
+        {
+            if (mesh == null || materials == null || materials.Length == 0)
+            {
+                Debug.LogWarning(
+                    $"Renderer on GameObject \"{authoring.name}\" was not converted. The assigned mesh is null or no materials are assigned.",
+                    authoring);
+
+                return false;
+            }
+
+            string errorMessage = "";
+
+            for (int i = 0; i < materials.Length; i++)
+            {
+                if (materials[i] == null)
+                    errorMessage += $"Material ({i}) is null. ";
+                else if (materials[i].shader == null)
+                    errorMessage += $"Material {materials[i].name} ({i}) has null shader. ";
+            }
+
+            if (!string.IsNullOrEmpty(errorMessage))
+            {
+                Debug.LogWarning(
+                    $"Renderer on GameObject \"{authoring.name}\" has invalid Materials and will not render correctly at runtime. {errorMessage}",
+                    authoring);
+            }
+
+            return true;
         }
     }
 }

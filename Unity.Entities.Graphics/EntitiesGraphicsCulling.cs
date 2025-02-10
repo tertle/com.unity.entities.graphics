@@ -71,6 +71,7 @@ namespace Unity.Rendering
         public ushort CameraMoveDistanceFixed16;
         public float DistanceScale;
         public bool DistanceScaleChanged;
+        public int MaximumLODLevelMask;
 
         public ComponentTypeHandle<EntitiesGraphicsChunkInfo> EntitiesGraphicsChunkInfo;
         [ReadOnly] public ComponentTypeHandle<ChunkHeader> ChunkHeader;
@@ -140,82 +141,85 @@ namespace Unity.Rendering
                     int diff = (int)chunkCullingData.MovementGraceFixed16 - CameraMoveDistanceFixed16;
                     chunkCullingData.MovementGraceFixed16 = (ushort)math.max(0, diff);
 
-                    var graceExpired = chunkCullingData.MovementGraceFixed16 == 0;
-                    var forceLodChanged = forceLowLOD != chunkCullingData.ForceLowLODPrevious;
-
-                    if (graceExpired || forceLodChanged || DistanceScaleChanged)
-                    {
-                        chunkEntityLodEnabled.Enabled[0] = 0;
-                        chunkEntityLodEnabled.Enabled[1] = 0;
+                    chunkEntityLodEnabled.Enabled[0] = 0;
+                    chunkEntityLodEnabled.Enabled[1] = 0;
 
 #if UNITY_EDITOR
-                        stats.LodChunksTested++;
+                    stats.LodChunksTested++;
 #endif
-                        var chunk = chunkHeader.ArchetypeChunk;
+                    var chunk = chunkHeader.ArchetypeChunk;
 
-                        var rootLODRanges = chunk.GetNativeArray(ref RootLODRanges);
-                        var rootLODReferencePoints = chunk.GetNativeArray(ref RootLODReferencePoints);
-                        var lodRanges = chunk.GetNativeArray(ref LODRanges);
-                        var lodReferencePoints = chunk.GetNativeArray(ref LODReferencePoints);
+                    var rootLODRanges = chunk.GetNativeArray(ref RootLODRanges);
+                    var rootLODReferencePoints = chunk.GetNativeArray(ref RootLODReferencePoints);
+                    var lodRanges = chunk.GetNativeArray(ref LODRanges);
+                    var lodReferencePoints = chunk.GetNativeArray(ref LODReferencePoints);
 
-                        float graceDistance = float.MaxValue;
+                    float graceDistance = float.MaxValue;
 
-                        for (int i = 0; i < chunkInstanceCount; i++)
+                    for (int i = 0; i < chunkInstanceCount; i++)
+                    {
+                        var rootLODRange = rootLODRanges[i];
+                        var rootLODReferencePoint = rootLODReferencePoints[i];
+
+                        var rootLodDistance =
+                            math.select(
+                                DistanceScale *
+                                math.length(LODParams.cameraPos - rootLODReferencePoint.Value),
+                                DistanceScale, isOrtho);
+
+                        float rootMinDist = math.select(rootLODRange.LOD.MinDist, 0.0f, forceLowLOD == 1);
+                        float rootMaxDist = rootLODRange.LOD.MaxDist;
+
+                        graceDistance = math.min(math.abs(rootLodDistance - rootMinDist), graceDistance);
+                        graceDistance = math.min(math.abs(rootLodDistance - rootMaxDist), graceDistance);
+
+                        var rootLodIntersect = (rootLodDistance < rootMaxDist) && (rootLodDistance >= rootMinDist);
+
+                        if (rootLodIntersect)
                         {
-                            var rootLODRange = rootLODRanges[i];
-                            var rootLODReferencePoint = rootLODReferencePoints[i];
+                            var lodRange = lodRanges[i];
+                            if (lodRange.LODMask < MaximumLODLevelMask)
+                            {
+                                continue;
+                            }
+                            if (lodRange.LODMask == MaximumLODLevelMask)
+                            {
+                                    // Expand maximum LOD range to cover all higher LODs
+                                lodRange.MinDist = 0.0f;
+                            }
+                            var lodReferencePoint = lodReferencePoints[i];
 
-                            var rootLodDistance =
+                            var instanceDistance =
                                 math.select(
                                     DistanceScale *
-                                    math.length(LODParams.cameraPos - rootLODReferencePoint.Value),
-                                    DistanceScale, isOrtho);
-
-                            float rootMinDist = math.select(rootLODRange.LOD.MinDist, 0.0f, forceLowLOD == 1);
-                            float rootMaxDist = rootLODRange.LOD.MaxDist;
-
-                            graceDistance = math.min(math.abs(rootLodDistance - rootMinDist), graceDistance);
-                            graceDistance = math.min(math.abs(rootLodDistance - rootMaxDist), graceDistance);
-
-                            var rootLodIntersect = (rootLodDistance < rootMaxDist) && (rootLodDistance >= rootMinDist);
-
-                            if (rootLodIntersect)
-                            {
-                                var lodRange = lodRanges[i];
-                                var lodReferencePoint = lodReferencePoints[i];
-
-                                var instanceDistance =
-                                    math.select(
-                                        DistanceScale *
-                                        math.length(LODParams.cameraPos -
-                                            lodReferencePoint.Value), DistanceScale,
+                                    math.length(LODParams.cameraPos - lodReferencePoint.Value), DistanceScale,
                                         isOrtho);
 
-                                var instanceLodIntersect =
-                                    (instanceDistance < lodRange.MaxDist) &&
-                                    (instanceDistance >= lodRange.MinDist);
+                            var instanceLodIntersect =
+                                (instanceDistance < lodRange.MaxDist) &&
+                                (instanceDistance >= lodRange.MinDist);
 
-                                graceDistance = math.min(math.abs(instanceDistance - lodRange.MinDist),
-                                    graceDistance);
-                                graceDistance = math.min(math.abs(instanceDistance - lodRange.MaxDist),
-                                    graceDistance);
+                            graceDistance = math.min(math.abs(instanceDistance - lodRange.MinDist),
+                                graceDistance);
+                            graceDistance = math.min(math.abs(instanceDistance - lodRange.MaxDist),
+                                graceDistance);
 
-                                if (instanceLodIntersect)
-                                {
-                                    var index = i;
-                                    var wordIndex = index >> 6;
-                                    var bitIndex = index & 0x3f;
-                                    var lodWord = chunkEntityLodEnabled.Enabled[wordIndex];
+                            if (instanceLodIntersect)
+                            {
+                                var index = i;
+                                var wordIndex = index >> 6;
+                                var bitIndex = index & 0x3f;
+                                var lodWord = chunkEntityLodEnabled.Enabled[wordIndex];
 
-                                    lodWord |= 1UL << bitIndex;
-                                    chunkEntityLodEnabled.Enabled[wordIndex] = lodWord;
-                                }
+                                lodWord |= 1UL << bitIndex;
+                                chunkEntityLodEnabled.Enabled[wordIndex] = lodWord;
                             }
                         }
-
-                        chunkCullingData.MovementGraceFixed16 = Fixed16CamDistance.FromFloatFloor(graceDistance);
-                        chunkCullingData.ForceLowLODPrevious = forceLowLOD;
                     }
+
+                    chunkCullingData.MovementGraceFixed16 = Fixed16CamDistance.FromFloatFloor(graceDistance);
+                    chunkCullingData.ForceLowLODPrevious = forceLowLOD;
+
                 }
 
 
@@ -402,8 +406,8 @@ namespace Unity.Rendering
             }
 #endif
 
-            Debug.Assert(numSplits > 0, "No culling splits provided, expected at least 1");
-            Debug.Assert(numSplits <= 8, "Split count too high, only up to 8 splits supported");
+            Assert.IsTrue(numSplits > 0, "No culling splits provided, expected at least 1");
+            Assert.IsTrue(numSplits <= 8, "Split count too high, only up to 8 splits supported");
 
             int planePacketCount = 0;
             int combinedPlanePacketCount = 0;
@@ -634,6 +638,9 @@ namespace Unity.Rendering
 
         public BatchCullingViewType CullingViewType;
 
+        public bool CullLightmapShadowCasters;
+        [ReadOnly] public SharedComponentTypeHandle<LightMaps> LightMaps;
+
 #pragma warning disable 649
         [NativeSetThreadIndex] public int ThreadIndex;
 #pragma warning restore 649
@@ -642,10 +649,9 @@ namespace Unity.Rendering
         [NativeDisableUnsafePtrRestriction] public EntitiesGraphicsPerThreadStats* Stats;
 #endif
 
-        public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+        public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 enabledMaskIn)
         {
-            // This job is not written to support queries with enableable component types.
-            Assert.IsFalse(useEnabledMask);
+            var enabledMask = useEnabledMask ? enabledMaskIn : EntitiesGraphicsUtils.ComputeBitmask(chunk.Count);
 
             var allocator = ThreadLocalAllocator.ThreadAllocator(ThreadIndex);
             var visibilityItemWriter = VisibilityItems.List->AsParallelWriter();
@@ -675,6 +681,11 @@ namespace Unity.Rendering
 
             var perInstanceCull = 0 != (chunkCullingData.Flags & EntitiesGraphicsChunkCullingData.kFlagInstanceCulling);
 
+            // Filter out entities that affect lightmap if the cull lighmap shadow casters flag is set
+            bool isLightMapped = chunk.GetSharedComponentIndex(LightMaps) >= 0;
+            if (isLightMapped && CullLightmapShadowCasters)
+                return;
+
             if (anyLodEnabled)
             {
                 stats.ChunkCountAnyLod++;
@@ -684,12 +695,12 @@ namespace Unity.Rendering
 #if DISABLE_HYBRID_SPHERE_CULLING
                     useSphereTest = false;
 #endif
-                    FrustumCullWithReceiverAndSphereCulling(chunkBounds, chunk, chunkEntityLodEnabled,
+                    FrustumCullWithReceiverAndSphereCulling(chunkBounds, chunk, enabledMask, chunkEntityLodEnabled,
                         perInstanceCull, &chunkVisibility, ref stats,
                         useSphereTest: useSphereTest);
                 }
                 else
-                    FrustumCull(chunkBounds, chunk, chunkEntityLodEnabled, perInstanceCull, &chunkVisibility, ref stats);
+                    FrustumCull(chunkBounds, chunk, enabledMask, chunkEntityLodEnabled, perInstanceCull, &chunkVisibility, ref stats);
 
                 if (chunkVisibility.AnyVisible)
                 {
@@ -706,12 +717,13 @@ namespace Unity.Rendering
 
         private void FrustumCull(ChunkWorldRenderBounds chunkBounds,
             ArchetypeChunk chunk,
+            v128 enabledMask128,
             ChunkInstanceLodEnabled chunkEntityLodEnabled,
             bool perInstanceCull,
             ChunkVisibility* chunkVisibility,
             ref EntitiesGraphicsPerThreadStats stats)
         {
-            Debug.Assert(Splits.Splits.Length == 1);
+            Assert.IsTrue(Splits.Splits.Length == 1);
 
             var chunkIn = perInstanceCull
                 ? FrustumPlanes.Intersect2(Splits.SplitPlanePackets.AsNativeArray(), chunkBounds.Value)
@@ -731,7 +743,8 @@ namespace Unity.Rendering
 
                 for (int j = 0; j < 2; j++)
                 {
-                    var lodWord = chunkEntityLodEnabled.Enabled[j];
+                    var enabledMask = j == 0 ? enabledMask128.ULong0 : enabledMask128.ULong1;
+                    var lodWord = chunkEntityLodEnabled.Enabled[j] & enabledMask;
                     ulong visibleWord = 0;
 
                     while (lodWord != 0)
@@ -751,7 +764,7 @@ namespace Unity.Rendering
                         }
 
                         lodWord ^= 1ul << bitIndex;
-                        visibleWord |= ((ulong)visible) << bitIndex;
+                        visibleWord |= (ulong)visible << bitIndex;
 
 #if UNITY_EDITOR
                         instanceTestCount++;
@@ -773,7 +786,8 @@ namespace Unity.Rendering
 #endif
                 for (int j = 0; j < 2; j++)
                 {
-                    var lodWord = chunkEntityLodEnabled.Enabled[j];
+                    var enabledMask = j == 0 ? enabledMask128.ULong0 : enabledMask128.ULong1;
+                    var lodWord = chunkEntityLodEnabled.Enabled[j] & enabledMask;
                     chunkVisibility->VisibleEntities[j] = lodWord;
                 }
             }
@@ -786,6 +800,7 @@ namespace Unity.Rendering
         private void FrustumCullWithReceiverAndSphereCulling(
             ChunkWorldRenderBounds chunkBounds,
             ArchetypeChunk chunk,
+            v128 enabledMask128,
             ChunkInstanceLodEnabled chunkEntityLodEnabled,
             bool perInstanceCull,
             ChunkVisibility* chunkVisibility,
@@ -841,7 +856,8 @@ namespace Unity.Rendering
                 {
                     for (int j = 0; j < 2; j++)
                     {
-                        ulong lodWord = chunkEntityLodEnabled.Enabled[j];
+                        var enabledMask = j == 0 ? enabledMask128.ULong0 : enabledMask128.ULong1;
+                        var lodWord = chunkEntityLodEnabled.Enabled[j] & enabledMask;
                         ulong visibleWord = 0;
 
                         while (lodWord != 0)
@@ -878,10 +894,9 @@ namespace Unity.Rendering
                 }
                 else if (chunkIn == FrustumPlanes.IntersectResult.In)
                 {
-                    // VisibleEntities contains the union of all splits, so enable bits
-                    // for this split
-                    chunkVisibility->VisibleEntities[0] |= chunkEntityLodEnabled.Enabled[0];
-                    chunkVisibility->VisibleEntities[1] |= chunkEntityLodEnabled.Enabled[1];
+                    // VisibleEntities contains the union of all splits, so forward the lod and enableable masks combined.
+                    chunkVisibility->VisibleEntities[0] |= chunkEntityLodEnabled.Enabled[0] & enabledMask128.ULong0;
+                    chunkVisibility->VisibleEntities[1] |= chunkEntityLodEnabled.Enabled[1] & enabledMask128.ULong1;
 
                     for (int i = 0; i < numEntities; ++i)
                         chunkVisibility->SplitMasks[i] |= splitMask;
@@ -945,8 +960,8 @@ namespace Unity.Rendering
         {
             int numSplits = splits.Splits.Length;
 
-            Debug.Assert(numSplits <= 4, "More than 4 culling splits is not supported for sphere testing");
-            Debug.Assert(numSplits > 0, "No valid culling splits for sphere testing");
+            Assert.IsTrue(numSplits <= 4, "More than 4 culling splits is not supported for sphere testing");
+            Assert.IsTrue(numSplits > 0, "No valid culling splits for sphere testing");
 
             if (numSplits > 4)
                 numSplits = 4;
@@ -1165,7 +1180,7 @@ namespace Unity.Rendering
             // The distance returned might actually be too large in the case of a caster outside of the frustum
             // however detecting this would require to run another RayDistanceToFrustum and the case is rare enough
             // so its not a problem (these caster will just be less likely to be culled away).
-            Debug.Assert(planeIndex >= 0 && planeIndex < planes.Length);
+            Assert.IsTrue(planeIndex >= 0 && planeIndex < planes.Length);
 
             float distFromCasterToPlane = math.abs(planes[planeIndex].GetDistanceToPoint(casterPosition));
             float sinAlpha = distFromCasterToPlane / (distFromCasterToFrustumInLightDirection + 0.0001f);
