@@ -25,7 +25,6 @@ namespace Unity.Rendering
         }
     }
 
-
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(DeformationsInPresentation))]
     partial class PushMeshDataSystem : SystemBase { }
@@ -49,5 +48,5 @@ namespace Unity.Rendering
     [WorldSystemFilter(WorldSystemFilterFlags.Default | WorldSystemFilterFlags.Editor)]
     [UpdateInGroup(typeof(DeformationsInPresentation))]
     [UpdateAfter(typeof(BlendShapeDeformationSystem))]
-    sealed partial class SkinningDeformationSystem : SystemBase { }
+    partial class SkinningDeformationSystem : SystemBase { }
 }
