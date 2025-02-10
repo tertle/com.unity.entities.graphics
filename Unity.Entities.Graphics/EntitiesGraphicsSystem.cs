@@ -590,9 +590,9 @@ namespace Unity.Rendering
                 WorldUpdateAllocator);
             m_BoundsCheckHandle = new BoundsCheckMaterialMeshIndexJob
             {
-                RenderMeshArrayHandle = GetSharedComponentTypeHandle<RenderMeshArray>(),
-                MaterialMeshInfoHandle = GetComponentTypeHandle<MaterialMeshInfo>(true),
-                EntityHandle = GetEntityTypeHandle(),
+                RenderMeshArrayHandle = SystemAPI.ManagedAPI.GetSharedComponentTypeHandle<RenderMeshArray>(),
+                MaterialMeshInfoHandle = SystemAPI.GetComponentTypeHandle<MaterialMeshInfo>(true),
+                EntityHandle = SystemAPI.GetEntityTypeHandle(),
                 BRGRenderMeshArrays = m_BRGRenderMeshArrays,
                 EntitiesWithOutOfBoundsMMI = m_EntitiesWithOutOfBoundsMMI.AsParallelWriter(),
             }
@@ -1194,6 +1194,8 @@ namespace Unity.Rendering
                 // We cache all IComponentData types that we know are capable of overriding properties
                 m_ComponentTypeCache.UseType(typeIndex);
             }
+
+            m_ComponentTypeCache.FetchTypeHandles(this);
         }
 
 
@@ -1542,12 +1544,12 @@ namespace Unity.Rendering
                 {
                     ForceLowLOD = m_ForceLowLOD,
                     LODParams = lodParams,
-                    RootLODRanges = GetComponentTypeHandle<RootLODRange>(true),
-                    RootLODReferencePoints = GetComponentTypeHandle<RootLODWorldReferencePoint>(true),
-                    LODRanges = GetComponentTypeHandle<LODRange>(true),
-                    LODReferencePoints = GetComponentTypeHandle<LODWorldReferencePoint>(true),
-                    EntitiesGraphicsChunkInfo = GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(),
-                    ChunkHeader = GetComponentTypeHandle<ChunkHeader>(),
+                    RootLODRanges = SystemAPI.GetComponentTypeHandle<RootLODRange>(true),
+                    RootLODReferencePoints = SystemAPI.GetComponentTypeHandle<RootLODWorldReferencePoint>(true),
+                    LODRanges = SystemAPI.GetComponentTypeHandle<LODRange>(true),
+                    LODReferencePoints = SystemAPI.GetComponentTypeHandle<LODWorldReferencePoint>(true),
+                    EntitiesGraphicsChunkInfo = SystemAPI.GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(),
+                    ChunkHeader = SystemAPI.GetComponentTypeHandle<ChunkHeader>(),
                     CameraMoveDistanceFixed16 =
                         Fixed16CamDistance.FromFloatCeil(cameraMoveDistance * lodParams.distanceScale),
                     DistanceScale = lodParams.distanceScale,
@@ -1592,15 +1594,15 @@ namespace Unity.Rendering
             {
                 Splits = CullingSplits.Create(&cullingContext, QualitySettings.shadowProjection, m_ThreadLocalAllocators.GeneralAllocator->Handle),
                 CullingViewType = cullingContext.viewType,
-                EntitiesGraphicsChunkInfo = GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(true),
-                ChunkWorldRenderBounds = GetComponentTypeHandle<ChunkWorldRenderBounds>(true),
-                BoundsComponent = GetComponentTypeHandle<WorldRenderBounds>(true),
-                EntityHandle = GetEntityTypeHandle(),
+                EntitiesGraphicsChunkInfo = SystemAPI.GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(true),
+                ChunkWorldRenderBounds = SystemAPI.GetComponentTypeHandle<ChunkWorldRenderBounds>(true),
+                BoundsComponent = SystemAPI.GetComponentTypeHandle<WorldRenderBounds>(true),
+                EntityHandle = SystemAPI.GetEntityTypeHandle(),
                 IncludeExcludeListFilter = includeExcludeListFilter,
                 VisibilityItems = visibilityItems,
                 ThreadLocalAllocator = m_ThreadLocalAllocators,
                 CullLightmapShadowCasters = cullLightmapShadowCasters,
-                LightMaps = GetSharedComponentTypeHandle<LightMaps>(),
+                LightMaps = SystemAPI.GetSharedComponentTypeHandle<LightMaps>(),
 #if UNITY_EDITOR
                 Stats = m_PerThreadStats,
 #endif
@@ -1626,20 +1628,20 @@ namespace Unity.Rendering
             var emitDrawCommandsJob = new EmitDrawCommandsJob
             {
                 VisibilityItems = visibilityItems,
-                EntitiesGraphicsChunkInfo = GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(true),
-                MaterialMeshInfo = GetComponentTypeHandle<MaterialMeshInfo>(true),
-                LocalToWorld = GetComponentTypeHandle<LocalToWorld>(true),
-                DepthSorted = GetComponentTypeHandle<DepthSorted_Tag>(true),
-                DeformedMeshIndex = GetComponentTypeHandle<DeformedMeshIndex>(true),
-                ProceduralMotion = GetComponentTypeHandle<PerVertexMotionVectors_Tag>(true),
-                RenderFilterSettings = GetSharedComponentTypeHandle<RenderFilterSettings>(),
+                EntitiesGraphicsChunkInfo = SystemAPI.GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(true),
+                MaterialMeshInfo = SystemAPI.GetComponentTypeHandle<MaterialMeshInfo>(true),
+                LocalToWorld = SystemAPI.GetComponentTypeHandle<LocalToWorld>(true),
+                DepthSorted = SystemAPI.GetComponentTypeHandle<DepthSorted_Tag>(true),
+                DeformedMeshIndex = SystemAPI.GetComponentTypeHandle<DeformedMeshIndex>(true),
+                ProceduralMotion = SystemAPI.GetComponentTypeHandle<PerVertexMotionVectors_Tag>(true),
+                RenderFilterSettings = SystemAPI.GetSharedComponentTypeHandle<RenderFilterSettings>(),
                 FilterSettings = m_FilterSettings,
                 CullingLayerMask = cullingContext.cullingLayerMask,
-                LightMaps = GetSharedComponentTypeHandle<LightMaps>(),
-                RenderMeshArray = GetSharedComponentTypeHandle<RenderMeshArray>(),
+                LightMaps = SystemAPI.GetSharedComponentTypeHandle<LightMaps>(),
+                RenderMeshArray = SystemAPI.ManagedAPI.GetSharedComponentTypeHandle<RenderMeshArray>(),
                 BRGRenderMeshArrays = brgRenderMeshArrays,
 #if UNITY_EDITOR
-                EditorDataComponentHandle = GetSharedComponentTypeHandle<EditorRenderData>(),
+                EditorDataComponentHandle = SystemAPI.GetSharedComponentTypeHandle<EditorRenderData>(),
 #endif
                 DrawCommandOutput = chunkDrawCommandOutput,
                 SceneCullingMask = cullingContext.sceneCullingMask,
@@ -1827,16 +1829,16 @@ namespace Unity.Rendering
             }.Schedule(threadLocalAABBs.Length, 16);
             ThreadLocalAABB.AssertCacheLineSize();
 
-            var entitiesGraphicsRenderedChunkType= GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(false);
-            var entitiesGraphicsRenderedChunkTypeRO = GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(true);
-            var chunkHeadersRO = GetComponentTypeHandle<ChunkHeader>(true);
-            var chunkWorldRenderBoundsRO = GetComponentTypeHandle<ChunkWorldRenderBounds>(true);
-            var localToWorldsRO = GetComponentTypeHandle<LocalToWorld>(true);
-            var lodRangesRO = GetComponentTypeHandle<LODRange>(true);
-            var rootLodRangesRO = GetComponentTypeHandle<RootLODRange>(true);
-            var materialMeshInfosRO = GetComponentTypeHandle<MaterialMeshInfo>(true);
+            var entitiesGraphicsRenderedChunkType= SystemAPI.GetComponentTypeHandle<EntitiesGraphicsChunkInfo>();
+            var entitiesGraphicsRenderedChunkTypeRO = SystemAPI.GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(true);
+            var chunkHeadersRO = SystemAPI.GetComponentTypeHandle<ChunkHeader>(true);
+            var chunkWorldRenderBoundsRO = SystemAPI.GetComponentTypeHandle<ChunkWorldRenderBounds>(true);
+            var localToWorldsRO = SystemAPI.GetComponentTypeHandle<LocalToWorld>(true);
+            var lodRangesRO = SystemAPI.GetComponentTypeHandle<LODRange>(true);
+            var rootLodRangesRO = SystemAPI.GetComponentTypeHandle<RootLODRange>(true);
+            var materialMeshInfosRO = SystemAPI.GetComponentTypeHandle<MaterialMeshInfo>(true);
 
-            m_ComponentTypeCache.FetchTypeHandles(this);
+            m_ComponentTypeCache.UpdateTypeHandles(this);
 
             Profiler.EndSample();
 
@@ -1986,9 +1988,9 @@ namespace Unity.Rendering
 
             var drawCommandFlagsUpdated = new UpdateDrawCommandFlagsJob
             {
-                LocalToWorld = GetComponentTypeHandle<LocalToWorld>(true),
-                RenderFilterSettings = GetSharedComponentTypeHandle<RenderFilterSettings>(),
-                EntitiesGraphicsChunkInfo = GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(),
+                LocalToWorld = SystemAPI.GetComponentTypeHandle<LocalToWorld>(true),
+                RenderFilterSettings = SystemAPI.GetSharedComponentTypeHandle<RenderFilterSettings>(),
+                EntitiesGraphicsChunkInfo = SystemAPI.GetComponentTypeHandle<EntitiesGraphicsChunkInfo>(),
                 FilterSettings = m_FilterSettings,
                 DefaultFilterSettings = MakeFilterSettings(RenderFilterSettings.Default),
             }.ScheduleParallel(m_ChangedTransformQuery, entitiesGraphicsCompleted);
