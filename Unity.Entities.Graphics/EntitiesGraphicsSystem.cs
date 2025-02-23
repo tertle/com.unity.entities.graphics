@@ -1701,6 +1701,8 @@ namespace Unity.Rendering
 #endif
             };
 
+            m_CullingJobDependency = JobHandle.CombineDependencies(m_EntitiesGraphicsRenderedQueryRO.GetDependency(), m_CullingJobDependency);
+
             var emitDrawCommandsDependency = emitDrawCommandsJob.ScheduleWithIndirectList(visibilityItems, 1, m_CullingJobDependency);
 
             var collectGlobalBinsDependency =
