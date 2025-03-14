@@ -275,49 +275,54 @@ namespace Unity.Rendering
             var meshData = m_SharedMeshData;
             var meshIDs = m_MeshIDs;
 
-            Entities
-                .WithName("DisabledComponents")
+            var ecb = new EntityCommandBuffer(Allocator.Temp);
+
+            foreach (var (tracked, e) in SystemAPI
+                .Query<SharedMeshTracker>()
                 .WithAll<Disabled, DeformedEntity>()
-                .WithStructuralChanges()
-                .ForEach((Entity e, in SharedMeshTracker tracked) =>
-                {
-                    EntityManager.RemoveComponent<SharedMeshTracker>(e);
-                    EntityManager.RemoveComponent<DeformedMeshIndex>(e);
+                .WithOptions(EntityQueryOptions.IncludeDisabledEntities)
+                .WithEntityAccess())
+            {
+                ecb.RemoveComponent<SharedMeshTracker>(e);
+                ecb.RemoveComponent<DeformedMeshIndex>(e);
 
-                    // These components may or may not exist.
-                    EntityManager.RemoveComponent<BlendWeightBufferIndex>(e);
-                    EntityManager.RemoveComponent<SkinMatrixBufferIndex>(e);
+                // These components may or may not exist.
+                ecb.RemoveComponent<BlendWeightBufferIndex>(e);
+                ecb.RemoveComponent<SkinMatrixBufferIndex>(e);
 
-                    rmvMeshes.Add(tracked.VersionHash);
-                }).Run();
+                rmvMeshes.Add(tracked.VersionHash);
+            }
 
-            Entities
-                .WithName("RemoveComponents")
+            ecb.Playback(EntityManager);
+            ecb = new EntityCommandBuffer(Allocator.Temp);
+
+            foreach (var (tracked, e) in SystemAPI
+                .Query<SharedMeshTracker>()
                 .WithNone<DeformedEntity>()
-                .WithStructuralChanges()
-                .WithEntityQueryOptions(EntityQueryOptions.IncludeDisabledEntities)
-                .ForEach((Entity e, in SharedMeshTracker tracked) =>
-                {
-                    EntityManager.RemoveComponent<SharedMeshTracker>(e);
-                    EntityManager.RemoveComponent<DeformedMeshIndex>(e);
+                .WithOptions(EntityQueryOptions.IncludeDisabledEntities)
+                .WithEntityAccess())
+            {
+                ecb.RemoveComponent<SharedMeshTracker>(e);
+                ecb.RemoveComponent<DeformedMeshIndex>(e);
 
-                    // These components may or may not exist.
-                    EntityManager.RemoveComponent<BlendWeightBufferIndex>(e);
-                    EntityManager.RemoveComponent<SkinMatrixBufferIndex>(e);
+                // These components may or may not exist.
+                ecb.RemoveComponent<BlendWeightBufferIndex>(e);
+                ecb.RemoveComponent<SkinMatrixBufferIndex>(e);
 
-                    rmvMeshes.Add(tracked.VersionHash);
-                }).Run();
+                rmvMeshes.Add(tracked.VersionHash);
+            }
+
+            ecb.Playback(EntityManager);
+            ecb = new EntityCommandBuffer(Allocator.Temp);
 
             var brgRenderMeshArrays = World.GetExistingSystemManaged<RegisterMaterialsAndMeshesSystem>()?.BRGRenderMeshArrays ?? new NativeParallelHashMap<int, BRGRenderMeshArray>();
             var renderMeshArrayHandle = GetSharedComponentTypeHandle<RenderMeshArray>();
 
-            Entities
-                .WithName("AddComponents")
+            foreach (var (materialMeshInfo, e) in SystemAPI
+                .Query<MaterialMeshInfo>()
                 .WithAll<DeformedEntity>()
-                .WithNone<SharedMeshTracker>()
-                .WithStructuralChanges()
-                .ForEach((Entity e, in MaterialMeshInfo materialMeshInfo) =>
-                {
+                .WithEntityAccess())
+            {
                     // If the chunk has a RenderMeshArray, get access to the corresponding registered
                     // Material and Mesh IDs
                     BRGRenderMeshArray brgRenderMeshArray = default;
@@ -360,86 +365,84 @@ namespace Unity.Rendering
                         data = AddSharedMeshData(in meshID, mesh, meshIDs, meshData);
                     }
 
-                    EntityManager.AddComponentData(e, new SharedMeshTracker { VersionHash = data.StateHash() });
-                    EntityManager.AddComponent<DeformedMeshIndex>(e);
+                    ecb.AddComponent(e, new SharedMeshTracker { VersionHash = data.StateHash() });
+                    ecb.AddComponent<DeformedMeshIndex>(e);
 
                     if (data.HasBlendShapes)
-                        EntityManager.AddComponent<BlendWeightBufferIndex>(e);
+                        ecb.AddComponent<BlendWeightBufferIndex>(e);
 
                     if (data.HasSkinning)
-                        EntityManager.AddComponent<SkinMatrixBufferIndex>(e);
-                }).Run();
+                        ecb.AddComponent<SkinMatrixBufferIndex>(e);
+            }
+
+            ecb.Playback(EntityManager);
 
             // Update reference counting if a change has occured
             if (rmvMeshes.Length > 0 || addMeshes.Length > 0)
             {
-                Job.WithName("UpdateSharedMeshRefCounts")
-                   .WithCode(() =>
-                   {
-                       rmvMeshes.Sort();
-                       addMeshes.Sort();
+                rmvMeshes.Sort();
+                addMeshes.Sort();
 
-                       // Single pass O(n) in reverse. Both arrays are guaranteed to be sorted.
-                       for (int i = meshData.Length - 1, j = rmvMeshes.Length - 1, k = addMeshes.Length - 1; i >= 0 && (j >= 0 || k >= 0); i--)
-                       {
-                           var hash = meshData[i].StateHash();
+                // Single pass O(n) in reverse. Both arrays are guaranteed to be sorted.
+                for (int i = meshData.Length - 1, j = rmvMeshes.Length - 1, k = addMeshes.Length - 1; i >= 0 && (j >= 0 || k >= 0); i--)
+                {
+                    var hash = meshData[i].StateHash();
 
-                           // - Removal -
-                           // 1. Update indexer for current array
-                           while (j >= 0 && rmvMeshes[j] > hash)
-                               j--;
+                    // - Removal -
+                    // 1. Update indexer for current array
+                    while (j >= 0 && rmvMeshes[j] > hash)
+                        j--;
 
-                           // 2. If this mesh was removed, count how many
-                           int rmvCnt = 0;
-                           if (j >= 0 && rmvMeshes[j] == hash)
-                           {
-                               int start = j;
+                    // 2. If this mesh was removed, count how many
+                    int rmvCnt = 0;
+                    if (j >= 0 && rmvMeshes[j] == hash)
+                    {
+                        int start = j;
 
-                               while (j > 0 && rmvMeshes[j - 1] == hash)
-                                   j--;
+                        while (j > 0 && rmvMeshes[j - 1] == hash)
+                            j--;
 
-                               rmvCnt = start - j + 1;
-                           }
+                        rmvCnt = start - j + 1;
+                    }
 
-                           // - Addition -
-                           // 1. Update indexer for current array
-                           while (k >= 0 && addMeshes[k] > hash)
-                               k--;
+                    // - Addition -
+                    // 1. Update indexer for current array
+                    while (k >= 0 && addMeshes[k] > hash)
+                        k--;
 
-                           // 2. If this mesh was added, count how many
-                           int addCnt = 0;
-                           if (k >= 0 && addMeshes[k] == hash)
-                           {
-                               int start = k;
+                    // 2. If this mesh was added, count how many
+                    int addCnt = 0;
+                    if (k >= 0 && addMeshes[k] == hash)
+                    {
+                        int start = k;
 
-                               while (k > 0 && addMeshes[k - 1] == hash)
-                                   k--;
+                        while (k > 0 && addMeshes[k - 1] == hash)
+                            k--;
 
-                               addCnt = start - k + 1;
-                           }
+                        addCnt = start - k + 1;
+                    }
 
-                           int delta = addCnt - rmvCnt;
+                    int delta = addCnt - rmvCnt;
 
-                           // We can skip updating the ref count if the total number won't change.
-                           // Note: we do not need to check for eviction here either because the first
-                           // occurance of a mesh does not go through 'addMeshes'. In other words,
-                           // the delta will be -1 when all instances are added and removed in the same frame.
-                           if (delta != 0)
-                           {
-                               ref var data = ref meshData.ElementAt(i);
-                               data.RefCount += delta;
+                    // We can skip updating the ref count if the total number won't change.
+                    // Note: we do not need to check for eviction here either because the first
+                    // occurance of a mesh does not go through 'addMeshes'. In other words,
+                    // the delta will be -1 when all instances are added and removed in the same frame.
+                    if (delta != 0)
+                    {
+                        ref var data = ref meshData.ElementAt(i);
+                        data.RefCount += delta;
 
-                               Assert.IsTrue(data.RefCount >= 0);
+                        Assert.IsTrue(data.RefCount >= 0);
 
-                               // Evict Mesh if no one references it
-                               if (data.RefCount == 0)
-                               {
-                                   meshData.RemoveAt(i);
-                                   meshIDs.RemoveAt(i);
-                               }
-                           }
-                       }
-                   }).Run();
+                        // Evict Mesh if no one references it
+                        if (data.RefCount == 0)
+                        {
+                            meshData.RemoveAt(i);
+                            meshIDs.RemoveAt(i);
+                        }
+                    }
+                }
             }
 
             rmvMeshes.Dispose();
@@ -457,19 +460,19 @@ namespace Unity.Rendering
             var sharedMeshes = m_SharedMeshData;
 
             // For now assume every mesh is visible & active.
-            Dependency = Job
-                .WithName("CountActiveMeshes")
-                .WithReadOnly(meshes).WithReadOnly(sharedMeshes)
-                .WithCode(() =>
-                {
-                    for (int i = 0; i < sharedMeshes.Length; i++)
-                    {
-                        var sharedMesh = sharedMeshes[i];
-                        var meshId = sharedMesh.MeshID;
-                        var index = meshes.IndexOf(meshId);
-                        count[index] = sharedMesh.RefCount;
-                    }
-                }).Schedule(Dependency);
+            // Dependency = Job
+            //     .WithName("CountActiveMeshes")
+            //     .WithReadOnly(meshes).WithReadOnly(sharedMeshes)
+            //     .WithCode(() =>
+            //     {
+            //         for (int i = 0; i < sharedMeshes.Length; i++)
+            //         {
+            //             var sharedMesh = sharedMeshes[i];
+            //             var meshId = sharedMesh.MeshID;
+            //             var index = meshes.IndexOf(meshId);
+            //             count[index] = sharedMesh.RefCount;
+            //         }
+            //     }).Schedule(Dependency);
 
             //Dependency = Entities
             //    .WithName("CountActiveMeshes")
@@ -502,49 +505,49 @@ namespace Unity.Rendering
             var batches = DeformationBatches;
             batches.Clear();
 
-            Dependency = Job
-                .WithName("ConstructDeformationBatches")
-                .WithReadOnly(meshes).WithReadOnly(sharedMeshes)
-                .WithCode(() =>
-            {
-                int vertexCount, shapeWeightCount, skinMatrixCount;
-                vertexCount = shapeWeightCount = skinMatrixCount = k_DeformBufferStartIndex;
-
-                for (int i = 0; i < meshes.Length; i++)
-                {
-                    var instanceCount = count[i];
-
-                    // Skip this mesh if we do not have any active instances.
-                    if (instanceCount == 0)
-                        continue;
-
-                    var id = meshes[i];
-                    var batch = new MeshDeformationBatch
-                    {
-                        BatchIndex = batches.Count(),
-                        MeshVertexIndex = vertexCount,
-                        BlendShapeIndex = shapeWeightCount,
-                        SkinMatrixIndex = skinMatrixCount,
-                        InstanceCount = instanceCount,
-                    };
-                    batches.Add(id, batch);
-
-                    var meshData = sharedMeshes[meshes.IndexOf(id)];
-
-                    vertexCount += instanceCount * meshData.VertexCount;
-
-                    if (meshData.HasBlendShapes)
-                        shapeWeightCount += instanceCount * meshData.BlendShapeCount;
-
-                    if (meshData.HasSkinning)
-                        skinMatrixCount += instanceCount * meshData.BoneCount;
-                }
-
-                // Assign the total counts
-                vertexCountRef.Value = vertexCount;
-                shapeWeightCountRef.Value = shapeWeightCount;
-                skinMatrixCountRef.Value = skinMatrixCount;
-            }).Schedule(Dependency);
+            // Dependency = Job
+            //     .WithName("ConstructDeformationBatches")
+            //     .WithReadOnly(meshes).WithReadOnly(sharedMeshes)
+            //     .WithCode(() =>
+            // {
+            //     int vertexCount, shapeWeightCount, skinMatrixCount;
+            //     vertexCount = shapeWeightCount = skinMatrixCount = k_DeformBufferStartIndex;
+            //
+            //     for (int i = 0; i < meshes.Length; i++)
+            //     {
+            //         var instanceCount = count[i];
+            //
+            //         // Skip this mesh if we do not have any active instances.
+            //         if (instanceCount == 0)
+            //             continue;
+            //
+            //         var id = meshes[i];
+            //         var batch = new MeshDeformationBatch
+            //         {
+            //             BatchIndex = batches.Count(),
+            //             MeshVertexIndex = vertexCount,
+            //             BlendShapeIndex = shapeWeightCount,
+            //             SkinMatrixIndex = skinMatrixCount,
+            //             InstanceCount = instanceCount,
+            //         };
+            //         batches.Add(id, batch);
+            //
+            //         var meshData = sharedMeshes[meshes.IndexOf(id)];
+            //
+            //         vertexCount += instanceCount * meshData.VertexCount;
+            //
+            //         if (meshData.HasBlendShapes)
+            //             shapeWeightCount += instanceCount * meshData.BlendShapeCount;
+            //
+            //         if (meshData.HasSkinning)
+            //             skinMatrixCount += instanceCount * meshData.BoneCount;
+            //     }
+            //
+            //     // Assign the total counts
+            //     vertexCountRef.Value = vertexCount;
+            //     shapeWeightCountRef.Value = shapeWeightCount;
+            //     skinMatrixCountRef.Value = skinMatrixCount;
+            // }).Schedule(Dependency);
 
             m_BatchConstructionHandle = Dependency;
 
