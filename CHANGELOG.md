@@ -4,6 +4,24 @@ uid: changelog
 
 # Changelog
 
+## [1.4.9-exp.2] - 2025-03-07
+
+### Changed
+
+* Optimized code in OnPerformCulling to use Burst compilation
+
+### Fixed
+
+* Fixed a rare null reference issue when using a motion vector pass when renderers had null materials
+
+
+## [1.4.8] - 2025-02-24
+
+### Fixed
+
+* Fixed an issue where texture references would be lost if a texture was created during bake time and assigned to a material, while making use of SceneSections.
+
+
 ## [1.4.7] - 2025-02-17
 
 ### Fixed

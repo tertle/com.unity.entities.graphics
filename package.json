@@ -1,12 +1,12 @@
 {
   "name": "com.unity.entities.graphics",
   "displayName": "Entities Graphics",
-  "version": "1.4.7",
+  "version": "1.4.9-exp.2",
   "unity": "2022.3",
   "unityRelease": "11f1",
   "description": "The Entities Graphics package provides systems and components for drawing meshes using DOTS, including support for instanced mesh rendering and LOD.",
   "dependencies": {
-    "com.unity.entities": "1.3.10",
+    "com.unity.entities": "1.4.0-exp.2",
     "com.unity.modules.particlesystem": "1.0.0",
     "com.unity.render-pipelines.core": "14.0.9"
   },
@@ -17,16 +17,16 @@
     "unity"
   ],
   "_upm": {
-    "changelog": "### Fixed\n\n* OnPerformCulling does an early out when handling empty worlds"
+    "changelog": "### Changed\n\n* Optimized code in OnPerformCulling to use Burst compilation\n\n### Fixed\n\n* Fixed a rare null reference issue when using a motion vector pass when renderers had null materials"
   },
   "upmCi": {
-    "footprint": "6502364f0d62a94d9154008e212fe86729ee2495"
+    "footprint": "547d526a0a2c5f2d85357f64890e5da2e100601b"
   },
   "documentationUrl": "https://docs.unity3d.com/Packages/com.unity.entities.graphics@1.4/manual/index.html",
   "repository": {
     "url": "https://github.cds.internal.unity3d.com/unity/dots.git",
     "type": "git",
-    "revision": "893d3250e4978302326a812dde13aa126dbcd775"
+    "revision": "1c507bcdc4eaebca77bc8a6d4eac199cdcbb391e"
   },
-  "_fingerprint": "8f6286f2d39a206412e6d807300fc51af4edaa06"
+  "_fingerprint": "b589e18ef463cc8c59def6c1518f2e8ea985b7ba"
 }
